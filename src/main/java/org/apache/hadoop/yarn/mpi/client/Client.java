@@ -61,6 +61,8 @@ import org.apache.hadoop.yarn.mpi.util.Utilities;
 import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.hadoop.yarn.util.Records;
 
+import javax.rmi.CORBA.Util;
+
 /**
  * Client for MPI application submission to YARN.
  */
@@ -81,6 +83,8 @@ public class Client {
   private String amQueue = "";
   // Amt. of memory resource to request for to run the App Master
   private int amMemory = 64;
+  // Mpi type mpich or openmpi
+  private String mpiType = "";
   // Application master jar file
   private String appMasterJar = "";
   // Shell Command Container priority
@@ -185,6 +189,7 @@ public class Client {
     amPriority = conf.getInt(MPIConfiguration.MPI_AM_PRIORITY, 0);
     containerPriority = conf.getInt(MPIConfiguration.MPI_CONTAINER_PRIORITY, 0);
     amQueue = conf.get(MPIConfiguration.MPI_QUEUE);
+    mpiType = conf.get(MPIConfiguration.MPI_TYPE, Utilities.getDefaultMpiType());
     clientTimeout = conf.getLong(MPIConfiguration.MPI_TIMEOUT,
         24 * 60 * 60 * 1000);
     jvmOptions = conf.get(
@@ -213,6 +218,9 @@ public class Client {
     opts.addOption("a", "mpi-application", true,
         "Location of the mpi application to be executed");
     opts.addOption("o", "mpi-options", true, "Options for mpi program");
+    opts.addOption("mpi_type", true, "Mpi type that mpi apps use. "
+        + "Support "  + Utilities.getSupportedMpiType()
+        + ". Default " + Utilities.getDefaultMpiType());
     opts.addOption("P", "priority", true, "Application Priority. Default 0");
     opts.addOption("p", "container-priority", true,
         "Priority for the shell command containers");
@@ -285,6 +293,16 @@ public class Client {
       throw new IllegalArgumentException(
           "Invalid memory specified for containers, exiting."
               + "Specified memory=" + containerMemory);
+    }
+
+    if (cliParser.hasOption("mpi-type")) {
+      mpiType = cliParser.getOptionValue("mpi-type", "mpich");
+    }
+    if (!Utilities.isMpiTypeValid(mpiType)) {
+      throw new IllegalArgumentException(
+          "Invalid mpi type specified, exiting."
+              + "Specified mpi type=" + mpiType
+              + ". We only support " + Utilities.getSupportedMpiType() +" now.");
     }
 
     if (cliParser.hasOption("priority")) {
@@ -592,6 +610,7 @@ public class Client {
      vargs.add("--container_memory " + String.valueOf(containerMemory));
      vargs.add("--num_containers " + String.valueOf(numContainers));
      vargs.add("--priority " + String.valueOf(containerPriority));
+     vargs.add("--mpi_type " + mpiType);
      if (debugFlag) {
        vargs.add("--debug");
      }
@@ -658,7 +677,6 @@ public class Client {
    * Monitor the submitted application for completion. Kill application if time
    * expires.
    *
-   * @param appId
    *          Application Id of application to be monitored
    * @return true if application completed successfully
    * @throws IOException

@@ -108,13 +108,15 @@ public class ApplicationMaster extends CompositeService {
   private String mpiExecDir;
   // MPI program options
   private String mpiOptions = "";
+  // MPI type
+  private String mpiType = "";
   private Map<String, Integer> hostToProcNum;
   private List<Container> distinctContainers;
   private String phrase = "";
   private int port = 5000;
   // A queue that keep track of the mpi messages
   private final LinkedBlockingQueue<String> mpiMsgs = new LinkedBlockingQueue<String>(
-    MPIConstants.MAX_LINE_LOGS);
+      MPIConstants.MAX_LINE_LOGS);
   // processes per container
   private int ppc = 1;
   // true if all the containers download the same file
@@ -122,7 +124,7 @@ public class ApplicationMaster extends CompositeService {
 
   private static final String NM_HOST_ENV = "NM_HOST";
   private static final String CONTAINER_ID = ApplicationConstants.Environment.CONTAINER_ID
-    .toString();
+      .toString();
 
   // MPI Input Data location
   private final ConcurrentHashMap<String, InputFile> fileToLocation = new ConcurrentHashMap<String, InputFile>();
@@ -227,11 +229,14 @@ public class ApplicationMaster extends CompositeService {
 
     Options opts = new Options();
     opts.addOption("app_attempt_id", true,
-      "App Attempt ID. Not to be used unless for testing purposes");
+        "App Attempt ID. Not to be used unless for testing purposes");
     opts.addOption("container_memory", true,
-      "Amount of memory in MB to be requested to run the shell command");
+        "Amount of memory in MB to be requested to run the shell command");
     opts.addOption("num_containers", true,
-      "No. of containers on which the shell command needs to be executed");
+        "No. of containers on which the shell command needs to be executed");
+    opts.addOption("mpi_type", true, "Mpi type that mpi apps use. "
+            + "Support "  + Utilities.getSupportedMpiType()
+            + ". Default " + Utilities.getDefaultMpiType());
     opts.addOption("priority", true, "Application Priority. Default 0");
     opts.addOption("o", "mpi-options", true, "MPI Program Options");
     opts.addOption("debug", false, "Dump out debug information");
@@ -241,7 +246,7 @@ public class ApplicationMaster extends CompositeService {
     if (args.length == 0) {
       printUsage(opts);
       throw new IllegalArgumentException(
-        "No args specified for application master to initialize");
+          "No args specified for application master to initialize");
     }
 
     if (cliParser.hasOption("help")) {
@@ -264,36 +269,36 @@ public class ApplicationMaster extends CompositeService {
       } else {
         LOG.error("Application Attempt Id not set in the environment");
         throw new IllegalArgumentException(
-          "Application Attempt Id not set in the environment");
+            "Application Attempt Id not set in the environment");
       }
     } else {
       org.apache.hadoop.yarn.api.records.ContainerId containerId = ConverterUtils
-        .toContainerId(envs.get(CONTAINER_ID));
+          .toContainerId(envs.get(CONTAINER_ID));
       appAttemptID = containerId.getApplicationAttemptId();
     }
 
     LOG.info("Application master for app" + ", appId="
-      + appAttemptID.getApplicationId().getId() + ", clustertimestamp="
-      + appAttemptID.getApplicationId().getClusterTimestamp()
-      + ", attemptId=" + appAttemptID.getAttemptId());
+        + appAttemptID.getApplicationId().getId() + ", clustertimestamp="
+        + appAttemptID.getApplicationId().getClusterTimestamp()
+        + ", attemptId=" + appAttemptID.getAttemptId());
 
     assert (envs.containsKey(MPIConstants.MPIEXECLOCATION));
     hdfsMPIExecLocation = envs.get(MPIConstants.MPIEXECLOCATION);
     LOG.info("HDFS mpi application location: " + hdfsMPIExecLocation);
     if (envs.containsKey(MPIConstants.MPIEXECTIMESTAMP)) {
       hdfsMPIExecTimestamp = Long.valueOf(envs
-        .get(MPIConstants.MPIEXECTIMESTAMP));
+          .get(MPIConstants.MPIEXECTIMESTAMP));
     }
     if (envs.containsKey(MPIConstants.MPIEXECLEN)) {
       hdfsMPIExecLen = Long.valueOf(envs.get(MPIConstants.MPIEXECLEN));
     }
     if (!hdfsMPIExecLocation.isEmpty()
-      && (hdfsMPIExecTimestamp <= 0 || hdfsMPIExecLen <= 0)) {
+        && (hdfsMPIExecTimestamp <= 0 || hdfsMPIExecLen <= 0)) {
       LOG.error("Illegal values in env for shell script path" + ", path="
-        + hdfsMPIExecLocation + ", len=" + hdfsMPIExecLen + ", timestamp="
-        + hdfsMPIExecTimestamp);
+          + hdfsMPIExecLocation + ", len=" + hdfsMPIExecLen + ", timestamp="
+          + hdfsMPIExecTimestamp);
       throw new IllegalArgumentException(
-        "Illegal values in env for mpi app path");
+          "Illegal values in env for mpi app path");
     }
 
     assert (envs.containsKey(MPIConstants.APPJARLOCATION));
@@ -301,22 +306,22 @@ public class ApplicationMaster extends CompositeService {
     LOG.info("HDFS AppMaster.jar location: " + hdfsAppJarLocation);
     if (envs.containsKey(MPIConstants.APPJARTIMESTAMP)) {
       hdfsAppJarTimeStamp = Long
-        .valueOf(envs.get(MPIConstants.APPJARTIMESTAMP));
+          .valueOf(envs.get(MPIConstants.APPJARTIMESTAMP));
     }
     if (envs.containsKey(MPIConstants.APPJARLEN)) {
       hdfsAppJarLen = Long.valueOf(envs.get(MPIConstants.APPJARLEN));
     }
     if (!hdfsAppJarLocation.isEmpty()
-      && (hdfsAppJarTimeStamp <= 0 || hdfsAppJarLen <= 0)) {
+        && (hdfsAppJarTimeStamp <= 0 || hdfsAppJarLen <= 0)) {
       LOG.error("Illegal values in env for shell script path" + ", path="
-        + hdfsAppJarLocation + ", len=" + hdfsAppJarLen + ", timestamp="
-        + hdfsAppJarTimeStamp);
+          + hdfsAppJarLocation + ", len=" + hdfsAppJarLen + ", timestamp="
+          + hdfsAppJarTimeStamp);
       throw new IllegalArgumentException(
-        "Illegal values in env for AppMaster.jar path");
+          "Illegal values in env for AppMaster.jar path");
     }
 
     numTotalContainers = Integer.parseInt(cliParser.getOptionValue(
-      "num_containers", "1"));
+        "num_containers", "1"));
 
     if (envs.containsKey(MPIConstants.MPIOPTIONS)) {
       mpiOptions = envs.get(MPIConstants.MPIOPTIONS);
@@ -339,7 +344,7 @@ public class ApplicationMaster extends CompositeService {
             Path inputPath = new Path(input.getLocation());
             inputPath = dfs.makeQualified(inputPath);
             List<FileStatus> downLoadFiles = Utilities.listRecursive(inputPath,
-              dfs, null);
+                dfs, null);
             fileDownloads.put(fileName, downLoadFiles);
             if (!input.isSame()) {
               if (downLoadFiles != null && downLoadFiles.size() > 0) {
@@ -371,12 +376,12 @@ public class ApplicationMaster extends CompositeService {
           MPIResult mResult = new MPIResult();
           mResult.setDfsLocation(location);
           String local = Utilities.getApplicationDir(conf,
-            appAttemptID.toString())
-            + fileName;
+              appAttemptID.toString())
+              + fileName;
           mResult.setContainerLocal(local);
           resultToDestination.put(fileName, mResult);
           LOG.debug(String.format("path of %s : %s", fileName,
-            mResult.toString()));
+              mResult.toString()));
         }
       }
     }
@@ -388,12 +393,14 @@ public class ApplicationMaster extends CompositeService {
 
     mpiExecDir = Utilities.getMpiExecDir(conf, appAttemptID);
 
+    mpiType = cliParser.getOptionValue("mpi_type", "mpich");
+
     containerMemory = Integer.parseInt(cliParser.getOptionValue(
-      "container_memory", "10"));
+        "container_memory", "10"));
     LOG.info("Container memory is " + containerMemory + " MB");
 
     requestPriority = Integer.parseInt(cliParser
-      .getOptionValue("priority", "0"));
+        .getOptionValue("priority", "0"));
 
     phrase = Utilities.getRandomPhrase(16);
     // TODO Port range, max is 65535, min is 5000, should be configurable
@@ -420,9 +427,9 @@ public class ApplicationMaster extends CompositeService {
    * @return
    */
   private ConcurrentHashMap<Integer, List<FileSplit>> getFileSplit(
-    final ConcurrentHashMap<String, List<FileStatus>> downLoadFiles,
-    final ConcurrentHashMap<String, InputFile> fileToLocation,
-    final List<Container> containers) {
+      final ConcurrentHashMap<String, List<FileStatus>> downLoadFiles,
+      final ConcurrentHashMap<String, InputFile> fileToLocation,
+      final List<Container> containers) {
     int containerSize = containers.size();
     ConcurrentHashMap<Integer, List<FileSplit>> mSplits = new ConcurrentHashMap<Integer, List<FileSplit>>();
     // init the mSplits
@@ -444,8 +451,8 @@ public class ApplicationMaster extends CompositeService {
         for (Container container : containers) {
           Integer containerId = container.getId().getId();
           String downFileName = Utilities.getApplicationDir(conf,
-            appAttemptID.toString())
-            + fileName;
+              appAttemptID.toString())
+              + fileName;
           fileToDestination.put(fileName, downFileName);
           sameSplit.setDownFileName(downFileName);
           mSplits.get(containerId).add(sameSplit);
@@ -471,8 +478,8 @@ public class ApplicationMaster extends CompositeService {
             ps.add(paths.get(i));
             fsNotSame.setSplits(ps);
             String destination = Utilities.getApplicationDir(conf,
-              appAttemptID.toString())
-              + fileName;
+                appAttemptID.toString())
+                + fileName;
             fsNotSame.setDownFileName(destination);
             fileToDestination.put(fileName, destination);
             mapSplit.put(fileName, fsNotSame);
@@ -528,7 +535,7 @@ public class ApplicationMaster extends CompositeService {
     LOG.info("Starting MPIClient service...");
     clientService.start();
     appMasterTrackingUrl = appMasterHostname + ":"
-      + clientService.getHttpPort();
+        + clientService.getHttpPort();
     LOG.info("Application Master tracking url is " + appMasterTrackingUrl);
 
     amPublicKey = generateKeyPairAndLoadPublicKey();
@@ -555,14 +562,14 @@ public class ApplicationMaster extends CompositeService {
    * @throws NoSuchAlgorithmException
    */
   public String generateKeyPairAndLoadPublicKey()
-    throws IOException, NoSuchAlgorithmException {
+      throws IOException, NoSuchAlgorithmException {
     String keypair_name = String.valueOf(this.appAttemptID.getApplicationId()
-      .getId()) + "-" + String.valueOf(this.appAttemptID.getAttemptId());
+        .getId()) + "-" + String.valueOf(this.appAttemptID.getAttemptId());
     String tempDirAddr = conf.get("hadoop.tmp.dir");
     File tempDir = new File(tempDirAddr);
     if (!tempDir.exists()) {
       throw new IOException("Temporary directory at "
-        + tempDir.getAbsolutePath() + " doesn't exist.");
+          + tempDir.getAbsolutePath() + " doesn't exist.");
     }
     File destination = new File(tempDir, keypair_name);
     keypair_position = destination.getAbsolutePath();
@@ -665,7 +672,7 @@ public class ApplicationMaster extends CompositeService {
       LOG.info("Max mem capabililty of resources in this cluster " + maxMem);
       if (containerMemory > maxMem) {
         LOG.info("Container memory specified above max threshold of cluster. Using max value."
-          + ", specified=" + containerMemory + ", max=" + maxMem);
+            + ", specified=" + containerMemory + ", max=" + maxMem);
         containerMemory = maxMem;
       }
     } catch (Exception e) {
@@ -681,11 +688,11 @@ public class ApplicationMaster extends CompositeService {
     }
 
     int allocateInterval = conf.getInt(MPIConfiguration.MPI_ALLOCATE_INTERVAL,
-      1000);
+        1000);
     rmClientAsync.setHeartbeatInterval(allocateInterval);
 
     LOG.info("Try to allocate " + numTotalContainers
-      + " containers with heartbeat interval = " + allocateInterval + " ms.");
+        + " containers with heartbeat interval = " + allocateInterval + " ms.");
 
     while (rmAsyncHandler.getAllocatedContainerNumber() < numTotalContainers) {
       Utilities.sleep(allocateInterval);
@@ -699,22 +706,22 @@ public class ApplicationMaster extends CompositeService {
     // key(Integer) represent the containerID;value(List<FileSplit>) represent
     // the files which need to be downloaded
     ConcurrentHashMap<Integer, List<FileSplit>> splits = getFileSplit(
-      fileDownloads, fileToLocation, distinctContainers);
+        fileDownloads, fileToLocation, distinctContainers);
     for (Container allocatedContainer : distinctContainers) {
       String host = allocatedContainer.getNodeId().getHost();
       containerHosts.add(host);
       LOG.info("Launching command on a new container" + ", containerId="
-        + allocatedContainer.getId() + ", containerNode="
-        + allocatedContainer.getNodeId().getHost() + ":"
-        + allocatedContainer.getNodeId().getPort() + ", containerNodeURI="
-        + allocatedContainer.getNodeHttpAddress()
-        // + ", containerState" + allocatedContainer.getState()
-        + ", containerResourceMemory"
-        + allocatedContainer.getResource().getMemory());
+          + allocatedContainer.getId() + ", containerNode="
+          + allocatedContainer.getNodeId().getHost() + ":"
+          + allocatedContainer.getNodeId().getPort() + ", containerNodeURI="
+          + allocatedContainer.getNodeHttpAddress()
+          // + ", containerState" + allocatedContainer.getState()
+          + ", containerResourceMemory"
+          + allocatedContainer.getResource().getMemory());
 
       Boolean result = launchContainerAsync(allocatedContainer,
-        splits.get(Integer.valueOf(allocatedContainer.getId().getId())),
-        resultToDestination.values());
+          splits.get(Integer.valueOf(allocatedContainer.getId().getId())),
+          resultToDestination.values());
 
       mpdListener.addContainer(new ContainerId(allocatedContainer.getId()));
     }
@@ -748,20 +755,20 @@ public class ApplicationMaster extends CompositeService {
       } else {
         isSuccess = false;
         diagnostics = "Diagnostics." + ", total=" + numTotalContainers
-          + ", completed=" + numCompletedContainers.get() + ", failed="
-          + numFailedContainers.get();
+            + ", completed=" + numCompletedContainers.get() + ", failed="
+            + numFailedContainers.get();
       }
     } catch (Exception e) {
       isSuccess = false;
       LOG.error("error occurs while starting MPD", e);
       e.printStackTrace();
       this.appendMsg("error occurs while starting MPD:"
-        + org.apache.hadoop.util.StringUtils.stringifyException(e));
+          + org.apache.hadoop.util.StringUtils.stringifyException(e));
       diagnostics = e.getMessage();
     }
 
     unregisterApp(isSuccess ? FinalApplicationStatus.SUCCEEDED
-      : FinalApplicationStatus.FAILED, diagnostics);
+        : FinalApplicationStatus.FAILED, diagnostics);
 
     return isSuccess;
   }
@@ -897,7 +904,7 @@ public class ApplicationMaster extends CompositeService {
       // signal to the RM
       LOG.info("Application completed. Signalling finish to RM");
       rmClientAsync.unregisterApplicationMaster(status, diagnostics,
-        appMasterTrackingUrl);
+          appMasterTrackingUrl);
 
       rmClientAsync.stop();
 
@@ -922,7 +929,7 @@ public class ApplicationMaster extends CompositeService {
       while (itNames.hasNext()) {
         String fileName = itNames.next();
         mpiOptions = mpiOptions.replaceAll(fileName,
-          this.fileToDestination.get(fileName));
+            this.fileToDestination.get(fileName));
       }
       // replace the result with container local location
       Set<String> resultNames = resultToDestination.keySet();
@@ -930,7 +937,7 @@ public class ApplicationMaster extends CompositeService {
       while (itResult.hasNext()) {
         String resultName = itResult.next();
         mpiOptions = mpiOptions.replaceAll(resultName,
-          resultToDestination.get(resultName).getContainerLocal());
+            resultToDestination.get(resultName).getContainerLocal());
       }
       LOG.info(String.format("mpi options:", mpiOptions));
 
@@ -946,7 +953,7 @@ public class ApplicationMaster extends CompositeService {
   private String getMpichLaunchCommand() {
     LOG.info("Launching mpiexec with mpich from the Application Master...");
     StringBuilder commandBuilder = new StringBuilder(
-      "mpiexec -launcher ssh -hosts ");
+        "mpiexec -launcher ssh -hosts ");
     Set<String> hosts = hostToProcNum.keySet();
     boolean first = true;
     for (String host : hosts) {
@@ -978,7 +985,7 @@ public class ApplicationMaster extends CompositeService {
     LOG.info("Launching mpirun with OpenMpi from the Application Master...");
     String hostFilePath = mpiExecDir + File.separator + ".hostfile";
     StringBuilder commandBuilder = new StringBuilder(
-      "mpirun -hostfile " + hostFilePath);
+        "mpirun -hostfile " + hostFilePath);
 
     try (FileWriter fileWriter = new FileWriter(hostFilePath)) {
       Set<String> hosts = hostToProcNum.keySet();
@@ -1007,7 +1014,14 @@ public class ApplicationMaster extends CompositeService {
    */
   private boolean launchMpiExec() throws IOException {
 
-    String launchCommand = getOpenMpiLaunchCommand();
+    String launchCommand = null;
+    if (mpiType.equals("mpich")) {
+      launchCommand = getMpichLaunchCommand();
+    } else if (mpiType.equals("ompi")) {
+      launchCommand = getOpenMpiLaunchCommand();
+    } else {
+      throw new MPDException("Unsupported mpi type.");
+    }
 
     //TODO Here we canceled mandatory host key checking, and may have potential risk for middle-man-attack
     String[] envs = {"PATH=" + System.getenv("PATH"), "HYDRA_LAUNCHER_EXTRA_ARGS=-o StrictHostKeyChecking=no -i " + keypair_position};
@@ -1070,7 +1084,7 @@ public class ApplicationMaster extends CompositeService {
                                       List<FileSplit> fileSplits, Collection<MPIResult> results) {
 
     LOG.info("Setting up container launch container for containerid="
-      + container.getId());
+        + container.getId());
 
     /*
      * String jobUserName =
@@ -1087,10 +1101,10 @@ public class ApplicationMaster extends CompositeService {
     mpiRsrc.setVisibility(LocalResourceVisibility.PUBLIC);
     try {
       mpiRsrc.setResource(ConverterUtils.getYarnUrlFromURI(new URI(
-        hdfsMPIExecLocation)));
+          hdfsMPIExecLocation)));
     } catch (URISyntaxException e) {
       LOG.error("Error when trying to use mpi application path specified in env"
-        + ", path=" + hdfsMPIExecLocation);
+          + ", path=" + hdfsMPIExecLocation);
       e.printStackTrace();
       return false;
     }
@@ -1103,10 +1117,10 @@ public class ApplicationMaster extends CompositeService {
     appJarRsrc.setVisibility(LocalResourceVisibility.PUBLIC);
     try {
       appJarRsrc.setResource(ConverterUtils.getYarnUrlFromURI(new URI(
-        hdfsAppJarLocation)));
+          hdfsAppJarLocation)));
     } catch (URISyntaxException e) {
       LOG.error("Error when trying to use appmaster.jar path specified in env"
-        + ", path=" + hdfsAppJarLocation);
+          + ", path=" + hdfsAppJarLocation);
       e.printStackTrace();
       return false;
     }
@@ -1149,7 +1163,7 @@ public class ApplicationMaster extends CompositeService {
      * Utilities.addLog4jSystemProperties(logLevel, logSize, vargs);
      */
     String javaOpts = conf.get(
-      MPIConfiguration.MPI_CONTAINER_JAVA_OPTS_EXCEPT_MEMORY, "");
+        MPIConfiguration.MPI_CONTAINER_JAVA_OPTS_EXCEPT_MEMORY, "");
     if (!StringUtils.isBlank(javaOpts)) {
       vargs.add(javaOpts);
     }
@@ -1172,7 +1186,7 @@ public class ApplicationMaster extends CompositeService {
     LOG.info("Executing command: " + commands.toString());
 
     ContainerLaunchContext ctx = ContainerLaunchContext.newInstance(
-      localResources, env, commands, null, null, null);
+        localResources, env, commands, null, null, null);
     // ctx.setTokens(UserGroupInformation.getCurrentUser().getCredentials().getAllTokens().duplicate());
 
     /*
@@ -1188,8 +1202,8 @@ public class ApplicationMaster extends CompositeService {
       nmClientAsync.startContainerAsync(container, ctx);
     } catch (Exception e) {
       LOG.error(
-        "Start container failed for :" + ", containerId=" + container.getId(),
-        e);
+          "Start container failed for :" + ", containerId=" + container.getId(),
+          e);
       e.printStackTrace();
       return false;
     }
@@ -1203,10 +1217,10 @@ public class ApplicationMaster extends CompositeService {
    * @throws YarnException , IOException
    */
   private RegisterApplicationMasterResponse registerToRM()
-    throws YarnException, IOException {
+      throws YarnException, IOException {
     return rmClientAsync.registerApplicationMaster(clientService
-      .getBindAddress().getHostName(), clientService.getBindAddress()
-      .getPort(), appMasterTrackingUrl);
+        .getBindAddress().getHostName(), clientService.getBindAddress()
+        .getPort(), appMasterTrackingUrl);
   }
 
   /**

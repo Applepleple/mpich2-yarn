@@ -4,14 +4,8 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetSocketAddress;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.Map.Entry;
-import java.util.Random;
-import java.util.Set;
-import java.util.Vector;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.GZIPInputStream;
 
@@ -72,6 +66,18 @@ public final class Utilities {
     } catch (InterruptedException e) {
       LOG.warn("Thread Interrupted ...", e);
     }
+  }
+
+  public static String getDefaultMpiType() {
+    return "mpich";
+  }
+
+  public static List<String> getSupportedMpiType() {
+    return Arrays.asList("mpich", "ompi");
+  }
+
+  public static boolean isMpiTypeValid(String mpiType) {
+    return getSupportedMpiType().contains(mpiType);
   }
 
   /**
@@ -223,8 +229,6 @@ public final class Utilities {
 
   /**
    * encode the fileSplits to string
-   * @param files
-   * @return
    */
   public static String encodeSplit(List<FileSplit> fileSplits) {
     StringBuilder splitStr = new StringBuilder();
@@ -437,7 +441,6 @@ public final class Utilities {
 
   /**
    * Get the destination file path of the HDFS
-   * @param dfs HDFS
    * @param appName Application name
    * @param appId Application Id
    * @param filename file name
