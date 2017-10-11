@@ -110,6 +110,10 @@ public class ApplicationMaster extends CompositeService {
   private String mpiOptions = "";
   // MPI type
   private String mpiType = "";
+  // MPI app type
+  private String mpiAppType = "";
+  // App name
+  private String appName = "";
   private Map<String, Integer> hostToProcNum;
   private List<Container> distinctContainers;
   private String phrase = "";
@@ -237,6 +241,10 @@ public class ApplicationMaster extends CompositeService {
     opts.addOption("mpi_type", true, "Mpi type that mpi apps use. "
             + "Support "  + Utilities.getSupportedMpiType()
             + ". Default " + Utilities.getDefaultMpiType());
+    opts.addOption("mpi_app_type", true, "Mpi app type. "
+        + "Support "  + Utilities.getSupportedMpiAppType()
+        + ". Default " + Utilities.getDefaultMpiAppType());
+    opts.addOption("app_name", true, "MPI Program App Name");
     opts.addOption("priority", true, "Application Priority. Default 0");
     opts.addOption("o", "mpi-options", true, "MPI Program Options");
     opts.addOption("debug", false, "Dump out debug information");
@@ -393,7 +401,13 @@ public class ApplicationMaster extends CompositeService {
 
     mpiExecDir = Utilities.getMpiExecDir(conf, appAttemptID);
 
-    mpiType = cliParser.getOptionValue("mpi_type", "mpich");
+    mpiType = cliParser.getOptionValue("mpi_type", Utilities.getDefaultMpiType());
+    mpiAppType = cliParser.getOptionValue("mpi_app_type", Utilities.getDefaultMpiAppType());
+    appName = cliParser.getOptionValue("app_name", "");
+    if (StringUtils.isEmpty(appName)) {
+      throw new IllegalArgumentException(
+          "Illegal mpi app name");
+    }
 
     containerMemory = Integer.parseInt(cliParser.getOptionValue(
         "container_memory", "10"));
@@ -968,8 +982,12 @@ public class ApplicationMaster extends CompositeService {
     }
 
     commandBuilder.append(" ");
+    if (mpiAppType.equals("python")) {
+      commandBuilder.append("python ");
+    }
     commandBuilder.append(mpiExecDir);
-    commandBuilder.append("/MPIExec");
+    commandBuilder.append(File.separator);
+    commandBuilder.append(appName);
 
     appendMpiOptions(commandBuilder);
 
@@ -985,7 +1003,7 @@ public class ApplicationMaster extends CompositeService {
     LOG.info("Launching mpirun with OpenMpi from the Application Master...");
     String hostFilePath = mpiExecDir + File.separator + ".hostfile";
     StringBuilder commandBuilder = new StringBuilder(
-        "mpirun -hostfile " + hostFilePath);
+        "mpirun -n " + numTotalContainers + " -hostfile " + hostFilePath);
 
     try (FileWriter fileWriter = new FileWriter(hostFilePath)) {
       Set<String> hosts = hostToProcNum.keySet();
@@ -998,8 +1016,12 @@ public class ApplicationMaster extends CompositeService {
     }
 
     commandBuilder.append(" ");
+    if (mpiAppType.equals("python")) {
+      commandBuilder.append("python ");
+    }
     commandBuilder.append(mpiExecDir);
-    commandBuilder.append("/MPIExec");
+    commandBuilder.append(File.separator);
+    commandBuilder.append(appName);
 
     appendMpiOptions(commandBuilder);
 
@@ -1014,7 +1036,7 @@ public class ApplicationMaster extends CompositeService {
    */
   private boolean launchMpiExec() throws IOException {
 
-    String launchCommand = null;
+    String launchCommand;
     if (mpiType.equals("mpich")) {
       launchCommand = getMpichLaunchCommand();
     } else if (mpiType.equals("ompi")) {
@@ -1110,7 +1132,7 @@ public class ApplicationMaster extends CompositeService {
     }
     mpiRsrc.setTimestamp(hdfsMPIExecTimestamp);
     mpiRsrc.setSize(hdfsMPIExecLen);
-    localResources.put("MPIExec", mpiRsrc);
+    localResources.put(appName, mpiRsrc);
     assert (!hdfsAppJarLocation.isEmpty());
     LocalResource appJarRsrc = Records.newRecord(LocalResource.class);
     appJarRsrc.setType(LocalResourceType.FILE);
@@ -1135,6 +1157,7 @@ public class ApplicationMaster extends CompositeService {
 
     env.put("CLASSPATH", System.getenv("CLASSPATH"));
     env.put("MPIEXECDIR", mpiExecDir);
+    env.put("MPIAPPNAME", appName);
 
     env.put(MPIConstants.CONTAININPUT, Utilities.encodeSplit(fileSplits));
     env.put(MPIConstants.APPATTEMPTID, appAttemptID.toString());

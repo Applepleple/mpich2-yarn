@@ -85,6 +85,8 @@ public class Client {
   private int amMemory = 64;
   // Mpi type mpich or openmpi
   private String mpiType = "";
+  // Mpi app type
+  private String mpiAppType = "";
   // Application master jar file
   private String appMasterJar = "";
   // Shell Command Container priority
@@ -190,6 +192,7 @@ public class Client {
     containerPriority = conf.getInt(MPIConfiguration.MPI_CONTAINER_PRIORITY, 0);
     amQueue = conf.get(MPIConfiguration.MPI_QUEUE);
     mpiType = conf.get(MPIConfiguration.MPI_TYPE, Utilities.getDefaultMpiType());
+    mpiAppType = conf.get(MPIConfiguration.MPI_APP_TYPE, Utilities.getDefaultMpiAppType());
     clientTimeout = conf.getLong(MPIConfiguration.MPI_TIMEOUT,
         24 * 60 * 60 * 1000);
     jvmOptions = conf.get(
@@ -218,9 +221,12 @@ public class Client {
     opts.addOption("a", "mpi-application", true,
         "Location of the mpi application to be executed");
     opts.addOption("o", "mpi-options", true, "Options for mpi program");
-    opts.addOption("mpi_type", true, "Mpi type that mpi apps use. "
+    opts.addOption("type","mpi-type", true, "Mpi type that mpi apps use. "
         + "Support "  + Utilities.getSupportedMpiType()
         + ". Default " + Utilities.getDefaultMpiType());
+    opts.addOption("at", "mpi-app-type",true, "Mpi app type. "
+        + "Support "  + Utilities.getSupportedMpiAppType()
+        + ". Default " + Utilities.getDefaultMpiAppType());
     opts.addOption("P", "priority", true, "Application Priority. Default 0");
     opts.addOption("p", "container-priority", true,
         "Priority for the shell command containers");
@@ -296,13 +302,23 @@ public class Client {
     }
 
     if (cliParser.hasOption("mpi-type")) {
-      mpiType = cliParser.getOptionValue("mpi-type", "mpich");
+      mpiType = cliParser.getOptionValue("mpi-type", Utilities.getDefaultMpiType());
     }
     if (!Utilities.isMpiTypeValid(mpiType)) {
       throw new IllegalArgumentException(
           "Invalid mpi type specified, exiting."
               + "Specified mpi type=" + mpiType
               + ". We only support " + Utilities.getSupportedMpiType() +" now.");
+    }
+
+    if (cliParser.hasOption("mpi-app-type")) {
+      mpiAppType = cliParser.getOptionValue("mpi-app-type", Utilities.getDefaultMpiAppType());
+    }
+    if (!Utilities.isMpiAppTypeValid(mpiAppType)) {
+      throw new IllegalArgumentException(
+          "Invalid mpi app type specified, exiting."
+              + "Specified mpi app type=" + mpiAppType
+              + ". We only support " + Utilities.getSupportedMpiAppType() +" now.");
     }
 
     if (cliParser.hasOption("priority")) {
@@ -483,7 +499,7 @@ public class Client {
      // Create a local resource to point to the destination jar path
      Path appJarSrc = new Path(appMasterJar);
      Path appJarDst = Utilities
-         .getAppFile(conf, appName, appId, "AppMaster.jar");
+         .getAppFile(conf, "MPICH2", appId, "AppMaster.jar");
      LOG.info("Source path: " + appJarSrc.toString());
      LOG.info("Destination path: " + appJarDst.toString());
      dfs.copyFromLocalFile(false, true, appJarSrc, appJarDst);
@@ -507,7 +523,7 @@ public class Client {
      LOG.info("Copy MPI application from local filesystem to remote.");
      assert (!mpiApplication.isEmpty());
      Path mpiAppSrc = new Path(mpiApplication);
-     Path mpiAppDst = Utilities.getAppFile(conf, appName, appId, "MPIExec");
+     Path mpiAppDst = Utilities.getAppFile(conf, "MPICH2", appId, appName);
      LOG.info("Source path: " + mpiAppSrc.toString());
      LOG.info("Destination path: " + mpiAppDst.toString());
      dfs.copyFromLocalFile(false, true, mpiAppSrc, mpiAppDst);
@@ -611,6 +627,8 @@ public class Client {
      vargs.add("--num_containers " + String.valueOf(numContainers));
      vargs.add("--priority " + String.valueOf(containerPriority));
      vargs.add("--mpi_type " + mpiType);
+     vargs.add("--mpi_app_type " + mpiAppType);
+     vargs.add("--app_name " + appName);
      if (debugFlag) {
        vargs.add("--debug");
      }
@@ -691,7 +709,7 @@ public class Client {
       ApplicationReport report = Utilities.getApplicationReport(appId,
           applicationsManager);
       assert (report != null);
-      if (mpiClient == null && isRunning.get() == true) {
+      if (mpiClient == null && isRunning.get()) {
         LOG.info("Got application report from ASM for" + ", appId="
             + appId.getId() + ", clientToken=" + report.getClientToAMToken()
             + ", appDiagnostics=" + report.getDiagnostics()

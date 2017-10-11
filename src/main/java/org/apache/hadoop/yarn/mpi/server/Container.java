@@ -228,9 +228,10 @@ public class Container {
   public void copyMPIExecutable() {
     Map<String, String> envs = System.getenv();
     String mpiExecDir = envs.get("MPIEXECDIR");
+    String appName = envs.get("MPIAPPNAME");
     LocalFileUtils.mkdirs(mpiExecDir);
-    File mpiexecCwd = new File("./MPIExec");
-    File mpiexecSame = new File(mpiExecDir + "/MPIExec");
+    File mpiexecCwd = new File(appName);
+    File mpiexecSame = new File(mpiExecDir + File.separator + appName);
     LocalFileUtils.copyFile(mpiexecCwd, mpiexecSame);
     mpiexecSame.setExecutable(true);
   }

@@ -1,5 +1,6 @@
 package org.apache.hadoop.yarn.mpi.util;
 
+import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -77,7 +78,19 @@ public final class Utilities {
   }
 
   public static boolean isMpiTypeValid(String mpiType) {
-    return getSupportedMpiType().contains(mpiType);
+    return !StringUtils.isEmpty(mpiType) && getSupportedMpiType().contains(mpiType);
+  }
+
+  public static String getDefaultMpiAppType() {
+    return "exec";
+  }
+
+  public static List<String> getSupportedMpiAppType() {
+    return Arrays.asList("exec", "python");
+  }
+
+  public static boolean isMpiAppTypeValid(String mpiType) {
+    return !StringUtils.isEmpty(mpiType) && getSupportedMpiAppType().contains(mpiType);
   }
 
   /**
@@ -447,7 +460,7 @@ public final class Utilities {
    * @return the Path instance
    */
   public static Path getAppFile(MPIConfiguration conf, String appName, ApplicationId appId, String filename) {
-    String pathSuffix = appName + "/" + appId.getId() + "/" + filename;
+    String pathSuffix = appName + File.separator + appId.getId() + File.separator + filename;
     Path result = new Path(conf.get(MPIConfiguration.MPI_SCRATCH_DIR, MPIConfiguration.DEFAULT_MPI_SCRATCH_DIR),
         pathSuffix);
     return result;

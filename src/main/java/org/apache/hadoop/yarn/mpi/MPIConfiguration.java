@@ -22,6 +22,8 @@ public class MPIConfiguration extends YarnConfiguration {
 
   public static final String MPI_TYPE = "yarn.mpi.type";
 
+  public static final String MPI_APP_TYPE = "yarn.mpi.app.type";
+
   public static final String MPI_TIMEOUT = "yarn.mpi.timeout";
 
   public static final String MPI_DOWNLOAD_RETRY = "yarn.mpi.download.retry";
