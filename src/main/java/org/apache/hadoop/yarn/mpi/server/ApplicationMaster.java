@@ -1046,7 +1046,9 @@ public class ApplicationMaster extends CompositeService {
     }
 
     //TODO Here we canceled mandatory host key checking, and may have potential risk for middle-man-attack
-    String[] envs = {"PATH=" + System.getenv("PATH"), "HYDRA_LAUNCHER_EXTRA_ARGS=-o StrictHostKeyChecking=no -i " + keypair_position};
+    String[] envs = {"PATH=" + System.getenv("PATH"),
+        "HYDRA_LAUNCHER_EXTRA_ARGS=-o StrictHostKeyChecking=no -i " + keypair_position,
+        "PYTHONPATH=/home/lwang/caffe2/build"};
     LOG.info("Executing command:" + launchCommand);
     File mpiPWD = new File(mpiExecDir);
     Runtime rt = Runtime.getRuntime();
