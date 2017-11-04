@@ -82,6 +82,8 @@ public class ApplicationMaster extends CompositeService {
   private int numTotalContainers = 1;
   // Memory to request for the container on which the shell command will run
   private int containerMemory = 10;
+  // The number of GPU to request for the container on which the shell command will run
+  private int containerGpuNum = 0;
   // Priority of the request
   private int requestPriority;
   // Simple flag to denote whether all works is done
@@ -236,6 +238,8 @@ public class ApplicationMaster extends CompositeService {
         "App Attempt ID. Not to be used unless for testing purposes");
     opts.addOption("container_memory", true,
         "Amount of memory in MB to be requested to run the shell command");
+    opts.addOption("container_gpu_num", true,
+        "The number of gpus to be requested to run the shell command");
     opts.addOption("num_containers", true,
         "No. of containers on which the shell command needs to be executed");
     opts.addOption("mpi_type", true, "Mpi type that mpi apps use. "
@@ -412,6 +416,10 @@ public class ApplicationMaster extends CompositeService {
     containerMemory = Integer.parseInt(cliParser.getOptionValue(
         "container_memory", "10"));
     LOG.info("Container memory is " + containerMemory + " MB");
+
+    containerGpuNum = Integer.parseInt(cliParser.getOptionValue(
+        "container_gpu_num", "10"));
+    LOG.info("The number of GPU of each container is " + containerGpuNum);
 
     requestPriority = Integer.parseInt(cliParser
         .getOptionValue("priority", "0"));
@@ -685,10 +693,19 @@ public class ApplicationMaster extends CompositeService {
       // LOG.info("Min mem capabililty of resources in this cluster " + minMem);
       LOG.info("Max mem capabililty of resources in this cluster " + maxMem);
       if (containerMemory > maxMem) {
-        LOG.info("Container memory specified above max threshold of cluster. Using max value."
+        LOG.warn("Container memory specified above max threshold of cluster. Using max value."
             + ", specified=" + containerMemory + ", max=" + maxMem);
         containerMemory = maxMem;
       }
+
+      int maxGpu = response.getMaximumResourceCapability().getGpus();
+      LOG.info("Max number of gpus of resources in this cluster " + maxGpu);
+      if (containerGpuNum > maxGpu) {
+        LOG.warn("The number of gpus of each container specified above max threshold of cluster." +
+            "Using max value, specified=" + containerGpuNum + ", max=" + maxGpu);
+        containerGpuNum = maxGpu;
+      }
+
     } catch (Exception e) {
       LOG.error("Error registering to ResourceManger.");
       e.printStackTrace();
@@ -871,6 +888,7 @@ public class ApplicationMaster extends CompositeService {
     Resource capability = Records.newRecord(Resource.class);
     capability.setMemory(containerMemory);
     capability.setVirtualCores(1);
+    capability.setGpus(containerGpuNum);
 
     ContainerRequest request = new ContainerRequest(capability, null, null, pri);
     LOG.info("Requested container ask: " + request.toString());

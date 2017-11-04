@@ -61,8 +61,6 @@ import org.apache.hadoop.yarn.mpi.util.Utilities;
 import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.hadoop.yarn.util.Records;
 
-import javax.rmi.CORBA.Util;
-
 /**
  * Client for MPI application submission to YARN.
  */
@@ -94,6 +92,9 @@ public class Client {
   // Amt of memory to request for container in which shell script will be
   // executed
   private int containerMemory = 10;
+  // The number of gpus to request for container in which shell script will be
+  // executed
+  private int containerGpuNum = 0;
   // No. of containers in which the shell script needs to be executed
   private int numContainers = 1;
   // Start time for client
@@ -218,6 +219,8 @@ public class Client {
         "Amount of memory in MB to be requested to run the application master");
     opts.addOption("m", "container-memory", true,
         "Amount of memory in MB to be requested to run the shell command");
+    opts.addOption("g", "container-gpu-num", true,
+        "The number of gpus of each container to be requested to run the shell command");
     opts.addOption("a", "mpi-application", true,
         "Location of the mpi application to be executed");
     opts.addOption("o", "mpi-options", true, "Options for mpi program");
@@ -289,6 +292,16 @@ public class Client {
       throw new IllegalArgumentException(
           "Invalid memory specified for application master, exiting."
               + " Specified memory=" + amMemory);
+    }
+
+    if (cliParser.hasOption("container-gpu-num")) {
+      containerGpuNum = Integer.parseInt(cliParser.getOptionValue(
+          "container-gpu-num", "0"));
+    }
+    if (containerGpuNum < 0) {
+      throw new IllegalArgumentException(
+          "Invalid gpu number specified for containers, exiting."
+              + "Specified gpu-number=" + containerGpuNum);
     }
 
     if (cliParser.hasOption("container-memory")) {
@@ -470,7 +483,8 @@ public class Client {
      * if (amMemory < minMem) { LOG.info(
      * "AM memory specified below min threshold of cluster. Using min value." +
      * ", specified=" + amMemory + ", min=" + minMem); amMemory = minMem; } else
-     */if (amMemory > maxMem) {
+     */
+    if (amMemory > maxMem) {
        LOG.info("AM memory specified above max threshold of cluster. Using max value."
            + ", specified=" + amMemory + ", max=" + maxMem);
        amMemory = maxMem;
@@ -478,6 +492,15 @@ public class Client {
      if (containerMemory > maxMem) {
        LOG.error("Container memories specified above the max threhold "
            + "(yarn.scheduler.maximum-allocation-mb) of the cluster");
+       return false;
+     }
+
+     int maxGpu = newApp.getMaximumResourceCapability().getGpus();
+     LOG.info("Max number of gpu in this cluster " + maxGpu);
+
+     if (containerGpuNum > maxGpu) {
+       LOG.error("Container gpus specified above the max threhold "
+           + "(yarn.scheduler.maximum-allocation-gpus) of the cluster");
        return false;
      }
 
@@ -624,6 +647,7 @@ public class Client {
      vargs.add("org.apache.hadoop.yarn.mpi.server.ApplicationMaster");
      // Set params for Application Master
      vargs.add("--container_memory " + String.valueOf(containerMemory));
+     vargs.add("--container_gpu_num " + String.valueOf(containerGpuNum));
      vargs.add("--num_containers " + String.valueOf(numContainers));
      vargs.add("--priority " + String.valueOf(containerPriority));
      vargs.add("--mpi_type " + mpiType);
