@@ -26,6 +26,7 @@ import java.util.concurrent.FutureTask;
 
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
+import org.apache.commons.lang.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -236,6 +237,19 @@ public class Container {
     mpiexecSame.setExecutable(true);
   }
 
+  public void writeGpuFile() {
+    Map<String, String> envs = System.getenv();
+    String mpiExecDir = envs.get("MPIEXECDIR");
+    String gpuIdsStr = envs.get("GPUS");
+    if (!StringUtils.isEmpty(gpuIdsStr)) {
+      try (FileWriter fileWriter = new FileWriter(mpiExecDir + File.separator + "gpus")) {
+        fileWriter.write(gpuIdsStr);
+      } catch (Exception e) {
+        e.printStackTrace();
+      }
+    }
+  }
+
   public Boolean run() throws IOException {
     // TODO Is there any outputs of daemons such as ssh?
 
@@ -441,6 +455,7 @@ public class Container {
         if (container.download()) {
           LOG.info("download successfully");
           container.copyMPIExecutable();
+          container.writeGpuFile();
           LOG.info("copy mpi program successfully");
           Boolean runSuccess = container.run();
           if (runSuccess) {

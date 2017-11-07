@@ -495,7 +495,7 @@ public class Client {
        return false;
      }
 
-     int maxGpu = newApp.getMaximumResourceCapability().getGpus();
+     int maxGpu = newApp.getMaximumResourceCapability().getGpuNum();
      LOG.info("Max number of gpu in this cluster " + maxGpu);
 
      if (containerGpuNum > maxGpu) {

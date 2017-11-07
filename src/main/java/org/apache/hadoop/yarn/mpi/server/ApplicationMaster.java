@@ -36,16 +36,8 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.service.CompositeService;
 import org.apache.hadoop.yarn.api.ApplicationConstants;
 import org.apache.hadoop.yarn.api.protocolrecords.RegisterApplicationMasterResponse;
-import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
-import org.apache.hadoop.yarn.api.records.ApplicationId;
+import org.apache.hadoop.yarn.api.records.*;
 import org.apache.hadoop.yarn.api.records.Container;
-import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
-import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
-import org.apache.hadoop.yarn.api.records.LocalResource;
-import org.apache.hadoop.yarn.api.records.LocalResourceType;
-import org.apache.hadoop.yarn.api.records.LocalResourceVisibility;
-import org.apache.hadoop.yarn.api.records.Priority;
-import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.client.api.AMRMClient.ContainerRequest;
 import org.apache.hadoop.yarn.client.api.async.AMRMClientAsync;
 import org.apache.hadoop.yarn.client.api.async.NMClientAsync;
@@ -698,7 +690,7 @@ public class ApplicationMaster extends CompositeService {
         containerMemory = maxMem;
       }
 
-      int maxGpu = response.getMaximumResourceCapability().getGpus();
+      int maxGpu = response.getMaximumResourceCapability().getGpuNum();
       LOG.info("Max number of gpus of resources in this cluster " + maxGpu);
       if (containerGpuNum > maxGpu) {
         LOG.warn("The number of gpus of each container specified above max threshold of cluster." +
@@ -747,8 +739,12 @@ public class ApplicationMaster extends CompositeService {
           + allocatedContainer.getNodeId().getPort() + ", containerNodeURI="
           + allocatedContainer.getNodeHttpAddress()
           // + ", containerState" + allocatedContainer.getState()
-          + ", containerResourceMemory"
-          + allocatedContainer.getResource().getMemory());
+          + ", containerResourceMemory="
+          + allocatedContainer.getResource().getMemory()
+          + ", containerGpus=");
+      for (Gpu gpu : allocatedContainer.getResource().getGpus()) {
+        LOG.info(gpu + " ");
+      }
 
       Boolean result = launchContainerAsync(allocatedContainer,
           splits.get(Integer.valueOf(allocatedContainer.getId().getId())),
@@ -888,7 +884,7 @@ public class ApplicationMaster extends CompositeService {
     Resource capability = Records.newRecord(Resource.class);
     capability.setMemory(containerMemory);
     capability.setVirtualCores(1);
-    capability.setGpus(containerGpuNum);
+    capability.setGpuNum(containerGpuNum);
 
     ContainerRequest request = new ContainerRequest(capability, null, null, pri);
     LOG.info("Requested container ask: " + request.toString());
@@ -1043,6 +1039,9 @@ public class ApplicationMaster extends CompositeService {
 
     appendMpiOptions(commandBuilder);
 
+    commandBuilder.append(" ");
+    commandBuilder.append("--gpus_file_path " + mpiExecDir + File.separator + "gpus");
+
     return commandBuilder.toString();
   }
 
@@ -1067,7 +1066,9 @@ public class ApplicationMaster extends CompositeService {
     String[] envs = {"PATH=" + System.getenv("PATH"),
         "HYDRA_LAUNCHER_EXTRA_ARGS=-o StrictHostKeyChecking=no -i " + keypair_position,
         "PYTHONPATH=/home/lwang/caffe2/build"};
-    LOG.info("Executing command:" + launchCommand);
+    String msg = "Executing command:" + launchCommand;
+    LOG.info(msg);
+    appendMsg(msg);
     File mpiPWD = new File(mpiExecDir);
     Runtime rt = Runtime.getRuntime();
     final Process pc = rt.exec(launchCommand, envs, mpiPWD);
@@ -1189,6 +1190,15 @@ public class ApplicationMaster extends CompositeService {
 
     env.put("PATH", System.getenv("PATH"));
     env.put(MPIConstants.AM_PUBLIC_KEY, amPublicKey);
+
+    StringBuilder stringBuilder = new StringBuilder();
+    for (Gpu gpu : container.getResource().getGpus()) {
+      stringBuilder.append(gpu.getIndex() + ",");
+    }
+    String gpuIdsStr = stringBuilder.toString();
+    if (gpuIdsStr.length() > 0)
+      gpuIdsStr = gpuIdsStr.substring(0, gpuIdsStr.length()-1);
+    env.put("GPUS", gpuIdsStr);
 
     containerToStatus.put(container.getId().toString(), MPDStatus.UNDEFINED);
     // Set the necessary command to execute on the allocated container
