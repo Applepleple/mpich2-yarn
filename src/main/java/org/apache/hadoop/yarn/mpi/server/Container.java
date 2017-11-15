@@ -11,13 +11,8 @@ import java.io.RandomAccessFile;
 import java.net.InetSocketAddress;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.Map.Entry;
-import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -240,10 +235,25 @@ public class Container {
   public void writeGpuFile() {
     Map<String, String> envs = System.getenv();
     String mpiExecDir = envs.get("MPIEXECDIR");
-    String gpuIdsStr = envs.get("GPUS");
-    if (!StringUtils.isEmpty(gpuIdsStr)) {
-      try (FileWriter fileWriter = new FileWriter(mpiExecDir + File.separator + "gpus")) {
-        fileWriter.write(gpuIdsStr);
+    String hostRankInfo = envs.get("HOSTRANKINFO");
+
+    if (!StringUtils.isEmpty(hostRankInfo) && hostRankInfo.contains(";")) {
+      String[] rankInfos = hostRankInfo.split(";");
+      for (String rankInfo : rankInfos) {
+        writeRankInfo(mpiExecDir, rankInfo);
+      }
+    } else {
+      writeRankInfo(mpiExecDir, hostRankInfo);
+    }
+  }
+
+  private void writeRankInfo(String mpiExecDir, String rankInfo) {
+    if (rankInfo.contains(":")) {
+      String[] infos = rankInfo.split(":");
+      String rank = infos[0];
+      String gpuIds = infos[1];
+      try (FileWriter fileWriter = new FileWriter(mpiExecDir + File.separator + rank)) {
+        fileWriter.write(gpuIds);
       } catch (Exception e) {
         e.printStackTrace();
       }

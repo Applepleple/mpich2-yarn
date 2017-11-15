@@ -582,8 +582,7 @@ public class Client {
          names.append(key).append("@");
          env.put(key, fileToLocation.get(key).toString());
        }
-       env.put(MPIConstants.MPIINPUTS, names.substring(0, names.length() - 1)
-           .toString());
+       env.put(MPIConstants.MPIINPUTS, names.substring(0, names.length() - 1));
      }
      // env.put(MPIConstants.ALLOCATOR, conf.get(
      // MPIConfiguration.MPI_CONTAINER_ALLOCATOR,
@@ -600,10 +599,10 @@ public class Client {
        while (itKeys.hasNext()) {
          String key = itKeys.next();
          resultNames.append(key).append("@");
-         env.put(key, resultToLocation.get(key).toString());
+         env.put(key, resultToLocation.get(key));
        }
        env.put(MPIConstants.MPIOUTPUTS,
-           resultNames.substring(0, resultNames.length() - 1).toString());
+           resultNames.substring(0, resultNames.length() - 1));
      }
 
      // Add AppMaster.jar location to classpath. At some point we should not be
