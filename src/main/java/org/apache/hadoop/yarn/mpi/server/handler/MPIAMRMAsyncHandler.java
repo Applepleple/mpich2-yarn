@@ -3,10 +3,7 @@
  */
 package org.apache.hadoop.yarn.mpi.server.handler;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.logging.Log;
@@ -18,10 +15,9 @@ import org.apache.hadoop.yarn.client.api.async.AMRMClientAsync.CallbackHandler;
 
 public class MPIAMRMAsyncHandler implements CallbackHandler {
   private static final Log LOG = LogFactory.getLog(MPIAMRMAsyncHandler.class);
-  private final Map<String, Integer> hostToProcNum = new HashMap<String, Integer>();
-  private final Map<String, Container> hostToContainer = new HashMap<String, Container>();
-  private final List<Container> distinctContainers = new ArrayList<Container>();
-  public final List<Container> acquiredContainers = new ArrayList<Container>();
+  private final Map<String, List<Container>> hostToContainers = new HashMap<>();
+  private final List<Container> distinctContainers = new ArrayList<>();
+  public final List<Container> acquiredContainers = new ArrayList<>();
   private final AtomicInteger acquiredContainersCount = new AtomicInteger(0);
   private final AtomicInteger neededContainersCount = new AtomicInteger();
 
@@ -37,16 +33,16 @@ public class MPIAMRMAsyncHandler implements CallbackHandler {
     neededContainersCount.set(count);
   }
 
-  public Map<String, Integer> getHostToProcNum() {
-    return new HashMap<String, Integer>(hostToProcNum);
-  }
-
   public List<Container> getDistinctContainers() {
-    return new ArrayList<Container>(distinctContainers);
+    return new ArrayList<>(distinctContainers);
   }
 
   public List<Container> getAcquiredContainers() {
-    return new ArrayList<Container>(acquiredContainers);
+    return new ArrayList<>(acquiredContainers);
+  }
+
+  public Map<String, List<Container>> getHostToContainer() {
+    return hostToContainers;
   }
 
   /*
@@ -73,19 +69,21 @@ public class MPIAMRMAsyncHandler implements CallbackHandler {
   @Override
   public void onContainersAllocated(List<Container> containers) {
     for (Container acquiredContainer : containers) {
-      LOG.info("AcquiredContainer: Id=" + acquiredContainer.getId()
+      String msg = "AcquiredContainer: Id=" + acquiredContainer.getId()
           + ", NodeId=" + acquiredContainer.getNodeId() + ", Host="
-          + acquiredContainer.getNodeId().getHost());
+          + acquiredContainer.getNodeId().getHost() + ", Resource="
+          + acquiredContainer.getResource();
+      LOG.info(msg);
       acquiredContainers.add(acquiredContainer);
       String host = acquiredContainer.getNodeId().getHost();
-      if (!hostToContainer.containsKey(host)) {
-        hostToContainer.put(host, acquiredContainer);
-        hostToProcNum.put(host, new Integer(1));
+      if (!hostToContainers.containsKey(host)) {
+        List<Container> hostContainers = new ArrayList<>();
+        hostContainers.add(acquiredContainer);
+        hostToContainers.put(host, hostContainers);
+
         distinctContainers.add(acquiredContainer);
       } else {
-        int procNum = hostToProcNum.get(host).intValue();
-        procNum++;
-        hostToProcNum.put(host, new Integer(procNum));
+        hostToContainers.get(host).add(acquiredContainer);
         // TODO check if this works
         // Container container = hostToContainer.get(host);
         // allocatedContainer.setState(ContainerState.COMPLETE);
