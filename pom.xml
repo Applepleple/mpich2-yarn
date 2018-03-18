@@ -18,29 +18,29 @@
 			<scope>test</scope>
 		</dependency>
 		<dependency>
-			<groupId>org.apache.hadoop</groupId>
+			<groupId>edu.fudan.hadoop</groupId>
 			<artifactId>hadoop-common</artifactId>
-			<version>2.4.0</version>
+			<version>2.7.2</version>
 		</dependency>
 		<dependency>
-			<groupId>org.apache.hadoop</groupId>
+			<groupId>edu.fudan.hadoop</groupId>
 			<artifactId>hadoop-yarn-api</artifactId>
-			<version>2.4.0</version>
+			<version>2.7.2</version>
 		</dependency>
 		<dependency>
-			<groupId>org.apache.hadoop</groupId>
+			<groupId>edu.fudan.hadoop</groupId>
 			<artifactId>hadoop-yarn-common</artifactId>
-			<version>2.4.0</version>
+			<version>2.7.2</version>
 		</dependency>
 		<dependency>
 			<groupId>org.apache.hadoop</groupId>
 			<artifactId>hadoop-mapreduce-client-core</artifactId>
-			<version>2.4.0</version>
+			<version>2.7.2</version>
 		</dependency>
 		<dependency>
-			<groupId>org.apache.hadoop</groupId>
+			<groupId>edu.fudan.hadoop</groupId>
 			<artifactId>hadoop-yarn-client</artifactId>
-			<version>2.4.0</version>
+			<version>2.7.2</version>
 		</dependency>
 		<dependency>
 			<groupId>commons-codec</groupId>

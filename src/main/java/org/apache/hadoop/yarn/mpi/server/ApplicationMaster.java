@@ -531,6 +531,7 @@ public class ApplicationMaster extends CompositeService {
     rmClientAsync = AMRMClientAsync.createAMRMClientAsync(1000, rmAsyncHandler);
     rmClientAsync.init(conf);
     rmClientAsync.start();
+    rmAsyncHandler.setRmClientAsync(rmClientAsync);
 
     // also init NMClient here
     LOG.info("Creating AM<->NM Protocol...");
@@ -633,15 +634,8 @@ public class ApplicationMaster extends CompositeService {
    */
   public boolean run() throws IOException, NoSuchAlgorithmException {
     LOG.info("Starting ApplicationMaster");
+    LOG.info("AM start time: " + System.currentTimeMillis());
 
-    // debug_launch_mpiexec();
-
-    // Connect to ResourceManager
-
-    // TODO Setup local RPC Server to accept status requests directly from
-    // clients
-    // TODO use the rpc port info to register with the RM for the client to send
-    // requests to this app master
     initAndStartRPCServices();
 
     // Register self with ResourceManager
@@ -650,7 +644,6 @@ public class ApplicationMaster extends CompositeService {
       // Dump out information about cluster capability as seen by the
       // resource manager
       int maxMem = response.getMaximumResourceCapability().getMemory();
-      // LOG.info("Min mem capabililty of resources in this cluster " + minMem);
       LOG.info("Max mem capabililty of resources in this cluster " + maxMem);
       if (containerMemory > maxMem) {
         LOG.warn("Container memory specified above max threshold of cluster. Using max value."
@@ -658,12 +651,14 @@ public class ApplicationMaster extends CompositeService {
         containerMemory = maxMem;
       }
 
-      int maxGpu = response.getMaximumResourceCapability().getGpuNum();
-      LOG.info("Max number of gpus of resources in this cluster " + maxGpu);
-      if (containerGpuNum > maxGpu) {
-        LOG.warn("The number of gpus of each container specified above max threshold of cluster." +
-            "Using max value, specified=" + containerGpuNum + ", max=" + maxGpu);
-        containerGpuNum = maxGpu;
+      if (containerGpuNum > 0) {
+        int maxGpu = response.getMaximumResourceCapability().getGpuNum();
+        LOG.info("Max number of gpus of resources in this cluster " + maxGpu);
+        if (containerGpuNum > maxGpu) {
+          LOG.warn("The number of gpus of each container specified above max threshold of cluster." +
+              "Using max value, specified=" + containerGpuNum + ", max=" + maxGpu);
+          containerGpuNum = maxGpu;
+        }
       }
 
     } catch (Exception e) {
@@ -673,17 +668,17 @@ public class ApplicationMaster extends CompositeService {
 
     rmAsyncHandler.setNeededContainersCount(numTotalContainers);
 
-    for (int i = 0; i < numTotalContainers; i++) {
-      ContainerRequest req = setupContainerAskForRM();
-      rmClientAsync.addContainerRequest(req);
-    }
-
     int allocateInterval = conf.getInt(MPIConfiguration.MPI_ALLOCATE_INTERVAL,
         1000);
     rmClientAsync.setHeartbeatInterval(allocateInterval);
 
     LOG.info("Try to allocate " + numTotalContainers
         + " containers with heartbeat interval = " + allocateInterval + " ms.");
+
+    for (int i = 0; i < numTotalContainers; i++) {
+      ContainerRequest req = setupContainerAskForRM();
+      rmClientAsync.addContainerRequest(req);
+    }
 
     while (rmAsyncHandler.getAllocatedContainerNumber() < numTotalContainers) {
       Utilities.sleep(allocateInterval);
@@ -713,14 +708,16 @@ public class ApplicationMaster extends CompositeService {
           + ", containerResourceMemory="
           + allocatedContainer.getResource().getMemory()
           + ", containerGpus=");
-      for (Gpu gpu : allocatedContainer.getResource().getGpus()) {
-        msg.append(gpu + " ");
+      if (containerGpuNum > 0) {
+        for (Gpu gpu : allocatedContainer.getResource().getGpus()) {
+          msg.append(gpu + " ");
+        }
       }
       LOG.info(msg.toString());
       appendMsg(msg.toString());
 
-      Boolean result = launchContainerAsync(allocatedContainer,
-          splits.get(Integer.valueOf(allocatedContainer.getId().getId())),
+      launchContainerAsync(allocatedContainer,
+          splits.get(allocatedContainer.getId().getId()),
           resultToDestination.values());
 
       mpdListener.addContainer(new ContainerId(allocatedContainer.getId()));
@@ -735,8 +732,9 @@ public class ApplicationMaster extends CompositeService {
         Utilities.sleep(PULL_INTERVAL);
       }
       this.appendMsg("all containers are launched successfully, executing mpiexec...");
-      LOG.info("all containers are launched successfully, executing mpiexec...");
+      this.appendMsg("Task start time :" + System.currentTimeMillis());
       boolean mpiExecSuccess = launchMpiExec();
+      this.appendMsg("Task end time :" + System.currentTimeMillis());
 
       LOG.info("mpiexec completed, wait for daemons doing clean-ups.");
       mpdListener.setAmFinished();
@@ -746,8 +744,7 @@ public class ApplicationMaster extends CompositeService {
       LOG.info("daemons are all finished.");
 
       // When the application completes, it should send a finish application
-      // signal
-      // to the RM
+      // signal to the RM
       LOG.info("Application completed. Signalling finish to RM");
 
       if (mpiExecSuccess) {
@@ -792,7 +789,9 @@ public class ApplicationMaster extends CompositeService {
     Resource capability = Records.newRecord(Resource.class);
     capability.setMemory(containerMemory);
     capability.setVirtualCores(1);
-    capability.setGpuNum(containerGpuNum);
+    if (containerGpuNum > 0) {
+      capability.setGpuNum(containerGpuNum);
+    }
 
     ContainerRequest request = new ContainerRequest(capability, null, null, pri);
     LOG.info("Requested container ask: " + request.toString());
@@ -934,7 +933,7 @@ public class ApplicationMaster extends CompositeService {
     appendMpiOptions(commandBuilder);
 
     commandBuilder.append(" ");
-    commandBuilder.append("--gpus_file_path " + mpiExecDir);
+    commandBuilder.append("--gpus_file_path " + mpiExecDir + File.separator + "GpuAllocateResult.txt");
 
     return commandBuilder.toString();
   }
@@ -985,15 +984,18 @@ public class ApplicationMaster extends CompositeService {
 
     // generate host file info
     int procNum = hostContainers.get(host).size();
-    hostFileInfo.append(host + " slots=" + procNum + " max_slots=" + procNum + "\n");
+//    hostFileInfo.append(host + " slots=" + procNum + " max_slots=" + procNum + "\n");
+    hostFileInfo.append(host + " : " + procNum + "\n");
 
     for (int i = 0; i < containers.size(); i++, rankIndex++) {
       // GPU allocation result
-      stringBuilder.append(rankIndex);
+      stringBuilder.append("GpuAllocateResult.txt");
       stringBuilder.append(":");
-      for (Gpu gpu : containers.get(i).getResource().getGpus()) {
-        stringBuilder.append(gpu.getIndex());
-        stringBuilder.append(",");
+      if (containerGpuNum > 0) {
+        for (Gpu gpu : containers.get(i).getResource().getGpus()) {
+          stringBuilder.append(gpu.getIndex());
+          stringBuilder.append(",");
+        }
       }
       stringBuilder.deleteCharAt(stringBuilder.length()-1);
       stringBuilder.append(";");
@@ -1026,8 +1028,7 @@ public class ApplicationMaster extends CompositeService {
 
     //TODO Here we canceled mandatory host key checking, and may have potential risk for middle-man-attack
     String[] envs = {"PATH=" + System.getenv("PATH"),
-        "HYDRA_LAUNCHER_EXTRA_ARGS=-o StrictHostKeyChecking=no -i " + keypair_position,
-        "PYTHONPATH=/home/lwang/caffe2/build"};
+        "HYDRA_LAUNCHER_EXTRA_ARGS=-o StrictHostKeyChecking=no -i " + keypair_position};
     String msg = "Executing command:" + launchCommand;
     LOG.info(msg);
     appendMsg(msg);
@@ -1090,13 +1091,6 @@ public class ApplicationMaster extends CompositeService {
 
     LOG.info("Setting up container launch container for containerid="
         + container.getId());
-
-    /*
-     * String jobUserName =
-     * System.getenv(ApplicationConstants.Environment.USER.name());
-     * ctx.setUser(jobUserName);
-     * LOG.info("Setting user in ContainerLaunchContext to: " + jobUserName);
-     */
 
     // Set the local resources for each container
     Map<String, LocalResource> localResources = new HashMap<String, LocalResource>();
@@ -1165,21 +1159,12 @@ public class ApplicationMaster extends CompositeService {
     vargs.add("-Xmx" + containerMemory + "m");
     // log are specified by the nodeManager's container-log4j.properties and
     // nodemanager can specify the MPI_AM_LOG_LEVEL and MPI_AM_LOG_SIZE
-    /*
-     * String logLevel = conf.get(MPIConfiguration.MPI_CONTAINER_LOG_LEVEL,
-     * MPIConfiguration.DEFAULT_MPI_CONTAINER_LOG_LEVEL); long logSize =
-     * conf.getLong(MPIConfiguration.MPI_CONTAINER_LOG_SIZE,
-     * MPIConfiguration.DEFAULT_MPI_CONTAINER_LOG_SIZE);
-     * Utilities.addLog4jSystemProperties(logLevel, logSize, vargs);
-     */
     String javaOpts = conf.get(
         MPIConfiguration.MPI_CONTAINER_JAVA_OPTS_EXCEPT_MEMORY, "");
     if (!StringUtils.isBlank(javaOpts)) {
       vargs.add(javaOpts);
     }
     vargs.add("org.apache.hadoop.yarn.mpi.server.Container");
-    // vargs.add("-p " + port);
-    // vargs.add("-f " + phrase);
     // Add log redirect params
     // FIXME Redirect the output to HDFS
     vargs.add("1>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + "/stdout");
@@ -1197,16 +1182,6 @@ public class ApplicationMaster extends CompositeService {
 
     ContainerLaunchContext ctx = ContainerLaunchContext.newInstance(
         localResources, env, commands, null, null, null);
-    // ctx.setTokens(UserGroupInformation.getCurrentUser().getCredentials().getAllTokens().duplicate());
-
-    /*
-     * StartContainerRequest startReq =
-     * Records.newRecord(StartContainerRequest.class);
-     * startReq.setContainerLaunchContext(ctx); List<StartContainerRequest>
-     * startReqList = new ArrayList<StartContainerRequest>();
-     * startReqList.add(startReq); StartContainersRequest startReqs =
-     * StartContainersRequest.newInstance(startReqList);
-     */
 
     try {
       nmClientAsync.startContainerAsync(container, ctx);

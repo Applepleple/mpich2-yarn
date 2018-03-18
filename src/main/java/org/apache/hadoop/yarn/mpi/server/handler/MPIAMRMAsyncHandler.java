@@ -11,6 +11,8 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerStatus;
 import org.apache.hadoop.yarn.api.records.NodeReport;
+import org.apache.hadoop.yarn.client.api.AMRMClient;
+import org.apache.hadoop.yarn.client.api.async.AMRMClientAsync;
 import org.apache.hadoop.yarn.client.api.async.AMRMClientAsync.CallbackHandler;
 
 public class MPIAMRMAsyncHandler implements CallbackHandler {
@@ -20,6 +22,13 @@ public class MPIAMRMAsyncHandler implements CallbackHandler {
   public final List<Container> acquiredContainers = new ArrayList<>();
   private final AtomicInteger acquiredContainersCount = new AtomicInteger(0);
   private final AtomicInteger neededContainersCount = new AtomicInteger();
+  private List<String> hostBlackList = new ArrayList<>();
+  private AMRMClientAsync<AMRMClient.ContainerRequest> rmClientAsync;
+
+
+  public void setRmClientAsync(AMRMClientAsync<AMRMClient.ContainerRequest> rmClientAsync) {
+    this.rmClientAsync = rmClientAsync;
+  }
 
   public int getAllocatedContainerNumber() {
     return acquiredContainersCount.get();
@@ -54,6 +63,8 @@ public class MPIAMRMAsyncHandler implements CallbackHandler {
    */
   @Override
   public void onContainersCompleted(List<ContainerStatus> statuses) {
+//    rmClientAsync.updateBlacklist(null, hostBlackList);
+    hostBlackList.clear();
     for (ContainerStatus status : statuses) {
       LOG.info("CompletedContainer: Id=" + status.getContainerId());
     }
@@ -84,10 +95,12 @@ public class MPIAMRMAsyncHandler implements CallbackHandler {
         distinctContainers.add(acquiredContainer);
       } else {
         hostToContainers.get(host).add(acquiredContainer);
-        // TODO check if this works
-        // Container container = hostToContainer.get(host);
-        // allocatedContainer.setState(ContainerState.COMPLETE);
       }
+      if (hostBlackList.isEmpty()) {
+        LOG.info("First resource scheduling time: " + System.currentTimeMillis());
+      }
+      hostBlackList.add(host);
+      rmClientAsync.updateBlacklist(hostBlackList, null);
     }
     acquiredContainersCount.addAndGet(containers.size());
     LOG.info("Current=" + acquiredContainersCount.get() + ", Needed="
