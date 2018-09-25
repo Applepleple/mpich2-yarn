@@ -11,13 +11,8 @@ import java.io.RandomAccessFile;
 import java.net.InetSocketAddress;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.Map.Entry;
-import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -26,6 +21,7 @@ import java.util.concurrent.FutureTask;
 
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
+import org.apache.commons.lang.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -228,11 +224,40 @@ public class Container {
   public void copyMPIExecutable() {
     Map<String, String> envs = System.getenv();
     String mpiExecDir = envs.get("MPIEXECDIR");
+    String appName = envs.get("MPIAPPNAME");
     LocalFileUtils.mkdirs(mpiExecDir);
-    File mpiexecCwd = new File("./MPIExec");
-    File mpiexecSame = new File(mpiExecDir + "/MPIExec");
+    File mpiexecCwd = new File(appName);
+    File mpiexecSame = new File(mpiExecDir + File.separator + appName);
     LocalFileUtils.copyFile(mpiexecCwd, mpiexecSame);
     mpiexecSame.setExecutable(true);
+  }
+
+  public void writeGpuFile() {
+    Map<String, String> envs = System.getenv();
+    String mpiExecDir = envs.get("MPIEXECDIR");
+    String hostRankInfo = envs.get("HOSTRANKINFO");
+
+    if (!StringUtils.isEmpty(hostRankInfo) && hostRankInfo.contains(";")) {
+      String[] rankInfos = hostRankInfo.split(";");
+      for (String rankInfo : rankInfos) {
+        writeRankInfo(mpiExecDir, rankInfo);
+      }
+    } else {
+      writeRankInfo(mpiExecDir, hostRankInfo);
+    }
+  }
+
+  private void writeRankInfo(String mpiExecDir, String rankInfo) {
+    if (rankInfo.contains(":")) {
+      String[] infos = rankInfo.split(":");
+      String rank = infos[0];
+      String gpuIds = infos[1];
+      try (FileWriter fileWriter = new FileWriter(mpiExecDir + File.separator + rank)) {
+        fileWriter.write(gpuIds);
+      } catch (Exception e) {
+        e.printStackTrace();
+      }
+    }
   }
 
   public Boolean run() throws IOException {
@@ -440,6 +465,7 @@ public class Container {
         if (container.download()) {
           LOG.info("download successfully");
           container.copyMPIExecutable();
+          container.writeGpuFile();
           LOG.info("copy mpi program successfully");
           Boolean runSuccess = container.run();
           if (runSuccess) {

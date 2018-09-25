@@ -81,6 +81,10 @@ public class Client {
   private String amQueue = "";
   // Amt. of memory resource to request for to run the App Master
   private int amMemory = 64;
+  // Mpi type mpich or openmpi
+  private String mpiType = "";
+  // Mpi app type
+  private String mpiAppType = "";
   // Application master jar file
   private String appMasterJar = "";
   // Shell Command Container priority
@@ -88,6 +92,9 @@ public class Client {
   // Amt of memory to request for container in which shell script will be
   // executed
   private int containerMemory = 10;
+  // The number of gpus to request for container in which shell script will be
+  // executed
+  private int containerGpuNum = 0;
   // No. of containers in which the shell script needs to be executed
   private int numContainers = 1;
   // Start time for client
@@ -122,8 +129,7 @@ public class Client {
   private final FileSystem dfs;
 
   /**
-   * @param args
-   *          Command line arguments
+   * @param args Command line arguments
    */
   public static void main(String[] args) {
     boolean result = false;
@@ -171,8 +177,7 @@ public class Client {
   /**
    * Helper function to print out usage
    *
-   * @param opts
-   *          Parsed command line options
+   * @param opts Parsed command line options
    */
   private void printUsage(Options opts) {
     new HelpFormatter().printHelp("Client", opts);
@@ -185,6 +190,8 @@ public class Client {
     amPriority = conf.getInt(MPIConfiguration.MPI_AM_PRIORITY, 0);
     containerPriority = conf.getInt(MPIConfiguration.MPI_CONTAINER_PRIORITY, 0);
     amQueue = conf.get(MPIConfiguration.MPI_QUEUE);
+    mpiType = conf.get(MPIConfiguration.MPI_TYPE, Utilities.getDefaultMpiType());
+    mpiAppType = conf.get(MPIConfiguration.MPI_APP_TYPE, Utilities.getDefaultMpiAppType());
     clientTimeout = conf.getLong(MPIConfiguration.MPI_TIMEOUT,
         24 * 60 * 60 * 1000);
     jvmOptions = conf.get(
@@ -194,8 +201,7 @@ public class Client {
   /**
    * Parse command line options
    *
-   * @param args
-   *          Parsed command line options
+   * @param args Parsed command line options
    * @return Whether the init was successful to run the client
    * @throws ParseException
    * @throws IOException
@@ -210,9 +216,17 @@ public class Client {
         "Amount of memory in MB to be requested to run the application master");
     opts.addOption("m", "container-memory", true,
         "Amount of memory in MB to be requested to run the shell command");
+    opts.addOption("g", "container-gpu-num", true,
+        "The number of gpus of each container to be requested to run the shell command");
     opts.addOption("a", "mpi-application", true,
         "Location of the mpi application to be executed");
     opts.addOption("o", "mpi-options", true, "Options for mpi program");
+    opts.addOption("type", "mpi-type", true, "Mpi type that mpi apps use. "
+        + "Support " + Utilities.getSupportedMpiType()
+        + ". Default " + Utilities.getDefaultMpiType());
+    opts.addOption("at", "mpi-app-type", true, "Mpi app type. "
+        + "Support " + Utilities.getSupportedMpiAppType()
+        + ". Default " + Utilities.getDefaultMpiAppType());
     opts.addOption("P", "priority", true, "Application Priority. Default 0");
     opts.addOption("p", "container-priority", true,
         "Priority for the shell command containers");
@@ -277,6 +291,16 @@ public class Client {
               + " Specified memory=" + amMemory);
     }
 
+    if (cliParser.hasOption("container-gpu-num")) {
+      containerGpuNum = Integer.parseInt(cliParser.getOptionValue(
+          "container-gpu-num", "0"));
+    }
+    if (containerGpuNum < 0) {
+      throw new IllegalArgumentException(
+          "Invalid gpu number specified for containers, exiting."
+              + "Specified gpu-number=" + containerGpuNum);
+    }
+
     if (cliParser.hasOption("container-memory")) {
       containerMemory = Integer.parseInt(cliParser.getOptionValue(
           "container-memory", "64"));
@@ -285,6 +309,26 @@ public class Client {
       throw new IllegalArgumentException(
           "Invalid memory specified for containers, exiting."
               + "Specified memory=" + containerMemory);
+    }
+
+    if (cliParser.hasOption("mpi-type")) {
+      mpiType = cliParser.getOptionValue("mpi-type", Utilities.getDefaultMpiType());
+    }
+    if (!Utilities.isMpiTypeValid(mpiType)) {
+      throw new IllegalArgumentException(
+          "Invalid mpi type specified, exiting."
+              + "Specified mpi type=" + mpiType
+              + ". We only support " + Utilities.getSupportedMpiType() + " now.");
+    }
+
+    if (cliParser.hasOption("mpi-app-type")) {
+      mpiAppType = cliParser.getOptionValue("mpi-app-type", Utilities.getDefaultMpiAppType());
+    }
+    if (!Utilities.isMpiAppTypeValid(mpiAppType)) {
+      throw new IllegalArgumentException(
+          "Invalid mpi app type specified, exiting."
+              + "Specified mpi app type=" + mpiAppType
+              + ". We only support " + Utilities.getSupportedMpiAppType() + " now.");
     }
 
     if (cliParser.hasOption("priority")) {
@@ -314,7 +358,7 @@ public class Client {
 
     numContainers = Integer.parseInt(cliParser.getOptionValue("num-containers",
         "1"));
-    LOG.info("Container number is " + numContainers);
+    LOG.info("Container count is " + numContainers);
     if (numContainers < 1) {
       throw new IllegalArgumentException(
           "Invalid no. of containers specified, exiting." + ", numContainer="
@@ -397,11 +441,10 @@ public class Client {
    * Main run function for the client
    *
    * @return true if application completed successfully
-   * @throws IOException
-   *           , YarnException
+   * @throws IOException , YarnException
    */
   public boolean run() throws IOException, YarnException {
-    LOG.info("Starting Client");
+    LOG.info("Client start time : " + System.currentTimeMillis());
     Utilities.printRelevantParams("Client", conf);
 
     // Connect to ResourceManager
@@ -436,233 +479,252 @@ public class Client {
      * if (amMemory < minMem) { LOG.info(
      * "AM memory specified below min threshold of cluster. Using min value." +
      * ", specified=" + amMemory + ", min=" + minMem); amMemory = minMem; } else
-     */if (amMemory > maxMem) {
-       LOG.info("AM memory specified above max threshold of cluster. Using max value."
-           + ", specified=" + amMemory + ", max=" + maxMem);
-       amMemory = maxMem;
-     }
-     if (containerMemory > maxMem) {
-       LOG.error("Container memories specified above the max threhold "
-           + "(yarn.scheduler.maximum-allocation-mb) of the cluster");
-       return false;
-     }
+     */
+    if (amMemory > maxMem) {
+      LOG.info("AM memory specified above max threshold of cluster. Using max value."
+          + ", specified=" + amMemory + ", max=" + maxMem);
+      amMemory = maxMem;
+    }
+    if (containerMemory > maxMem) {
+      LOG.error("Container memories specified above the max threhold "
+          + "(yarn.scheduler.maximum-allocation-mb) of the cluster");
+      return false;
+    }
 
-     // Create launch context for app master
-     LOG.info("Setting up application submission context for ASM");
-     ApplicationSubmissionContext appContext = Records
-         .newRecord(ApplicationSubmissionContext.class);
+    if (containerGpuNum > 0) {
+      int maxGpu = newApp.getMaximumResourceCapability().getGpuNum();
+      LOG.info("Max number of gpu in this cluster " + maxGpu);
 
-     // set the application id
-     LOG.info("Set Application Id: " + appId);
-     appContext.setApplicationId(appId);
+      if (containerGpuNum > maxGpu) {
+        LOG.error("Container gpus specified above the max threhold "
+            + "(yarn.scheduler.maximum-allocation-gpus) of the cluster");
+        return false;
+      }
+    }
 
-     // set the application name
-     LOG.info("Set Application Name: " + appName);
-     appContext.setApplicationName(appName);
+    // Create launch context for app master
+    LOG.info("Setting up application submission context for ASM");
+    ApplicationSubmissionContext appContext = Records
+        .newRecord(ApplicationSubmissionContext.class);
 
-     LOG.info("Copy App Master jar from local filesystem and add to local environment");
-     // Copy the application master jar to the filesystem
-     // Create a local resource to point to the destination jar path
-     Path appJarSrc = new Path(appMasterJar);
-     Path appJarDst = Utilities
-         .getAppFile(conf, appName, appId, "AppMaster.jar");
-     LOG.info("Source path: " + appJarSrc.toString());
-     LOG.info("Destination path: " + appJarDst.toString());
-     dfs.copyFromLocalFile(false, true, appJarSrc, appJarDst);
-     FileStatus appJarDestStatus = dfs.getFileStatus(appJarDst);
+    // set the application id
+    LOG.info("Set Application Id: " + appId);
+    appContext.setApplicationId(appId);
 
-     // set local resources for the application master
-     Map<String, LocalResource> localResources = new HashMap<String, LocalResource>();
-     LocalResource amJarRsrc = Records.newRecord(LocalResource.class);
-     amJarRsrc.setType(LocalResourceType.FILE);
-     amJarRsrc.setVisibility(LocalResourceVisibility.APPLICATION);
-     // Set the resource to be copied over
-     amJarRsrc.setResource(ConverterUtils.getYarnUrlFromPath(appJarDst));
-     // Set timestamp and length of file so that the framework can do basic
-     // sanity
-     // checks for the local resource after it has been copied over to ensure
-     // it is the same resource the client intended to use with the application
-     amJarRsrc.setTimestamp(appJarDestStatus.getModificationTime());
-     amJarRsrc.setSize(appJarDestStatus.getLen());
-     localResources.put("AppMaster.jar", amJarRsrc);
+    // set the application name
+    LOG.info("Set Application Name: " + appName);
+    appContext.setApplicationName(appName);
 
-     LOG.info("Copy MPI application from local filesystem to remote.");
-     assert (!mpiApplication.isEmpty());
-     Path mpiAppSrc = new Path(mpiApplication);
-     Path mpiAppDst = Utilities.getAppFile(conf, appName, appId, "MPIExec");
-     LOG.info("Source path: " + mpiAppSrc.toString());
-     LOG.info("Destination path: " + mpiAppDst.toString());
-     dfs.copyFromLocalFile(false, true, mpiAppSrc, mpiAppDst);
-     FileStatus mpiAppFileStatus = dfs.getFileStatus(mpiAppDst);
+    LOG.info("Copy App Master jar from local filesystem and add to local environment");
+    // Copy the application master jar to the filesystem
+    // Create a local resource to point to the destination jar path
+    Path appJarSrc = new Path(appMasterJar);
+    Path appJarDst = Utilities
+        .getAppFile(conf, "MPICH2", appId, "AppMaster.jar");
+    LOG.info("Source path: " + appJarSrc.toString());
+    LOG.info("Destination path: " + appJarDst.toString());
+    dfs.copyFromLocalFile(false, true, appJarSrc, appJarDst);
+    FileStatus appJarDestStatus = dfs.getFileStatus(appJarDst);
 
-     // Set the env variables to be setup in the env where the application master
-     // will be run
-     LOG.info("Set the environment for the application master and mpi application");
-     Map<String, String> env = new HashMap<String, String>();
-     // put location of mpi app and appmaster.jar into env
-     // using the env info, the application master will create the correct local
-     // resource for the
-     // eventual containers that will be launched to execute the shell scripts
-     env.put(MPIConstants.MPIEXECLOCATION, mpiAppDst.toUri().toString());
-     env.put(MPIConstants.MPIEXECTIMESTAMP,
-         Long.toString(mpiAppFileStatus.getModificationTime()));
-     env.put(MPIConstants.MPIEXECLEN, Long.toString(mpiAppFileStatus.getLen()));
-     env.put(MPIConstants.APPJARLOCATION, appJarDst.toUri().toString());
-     env.put(MPIConstants.APPJARTIMESTAMP,
-         Long.toString(appJarDestStatus.getModificationTime()));
-     env.put(MPIConstants.APPJARLEN, Long.toString(appJarDestStatus.getLen()));
-     if (!mpiOptions.isEmpty()) {
-       env.put(MPIConstants.MPIOPTIONS, mpiOptions);
-     }
-     env.put(MPIConstants.PROCESSESPERCONTAINER, String.valueOf(ppc));
-     Set<String> keyFiles = fileToLocation.keySet();
-     StringBuilder names = new StringBuilder(50);
-     if (keyFiles != null && keyFiles.size() > 0) {
-       Iterator<String> itKeys = keyFiles.iterator();
-       while (itKeys.hasNext()) {
-         String key = itKeys.next();
-         // TODO hard coding with '@'
-         names.append(key).append("@");
-         env.put(key, fileToLocation.get(key).toString());
-       }
-       env.put(MPIConstants.MPIINPUTS, names.substring(0, names.length() - 1)
-           .toString());
-     }
-     // env.put(MPIConstants.ALLOCATOR, conf.get(
-     // MPIConfiguration.MPI_CONTAINER_ALLOCATOR,
-     // MPIConfiguration.DEFAULT_MPI_CONTAINER_ALLOCATOR));
+    // set local resources for the application master
+    Map<String, LocalResource> localResources = new HashMap<String, LocalResource>();
+    LocalResource amJarRsrc = Records.newRecord(LocalResource.class);
+    amJarRsrc.setType(LocalResourceType.FILE);
+    amJarRsrc.setVisibility(LocalResourceVisibility.APPLICATION);
+    // Set the resource to be copied over
+    amJarRsrc.setResource(ConverterUtils.getYarnUrlFromPath(appJarDst));
+    // Set timestamp and length of file so that the framework can do basic
+    // sanity
+    // checks for the local resource after it has been copied over to ensure
+    // it is the same resource the client intended to use with the application
+    amJarRsrc.setTimestamp(appJarDestStatus.getModificationTime());
+    amJarRsrc.setSize(appJarDestStatus.getLen());
+    localResources.put("AppMaster.jar", amJarRsrc);
 
-     // TODO
-     env.put(MPIConstants.ALLOCATOR,
-         MPIConfiguration.DEFAULT_MPI_CONTAINER_ALLOCATOR);
+    LOG.info("Copy MPI application from local filesystem to remote.");
+    assert (!mpiApplication.isEmpty());
+    Path mpiAppSrc = new Path(mpiApplication);
+    Path mpiAppDst = Utilities.getAppFile(conf, "MPICH2", appId, appName);
+    LOG.info("Source path: " + mpiAppSrc.toString());
+    LOG.info("Destination path: " + mpiAppDst.toString());
+    dfs.copyFromLocalFile(false, true, mpiAppSrc, mpiAppDst);
+    FileStatus mpiAppFileStatus = dfs.getFileStatus(mpiAppDst);
 
-     Set<String> keyResults = resultToLocation.keySet();
-     StringBuilder resultNames = new StringBuilder(50);
-     if (keyResults != null && keyResults.size() > 0) {
-       Iterator<String> itKeys = keyResults.iterator();
-       while (itKeys.hasNext()) {
-         String key = itKeys.next();
-         resultNames.append(key).append("@");
-         env.put(key, resultToLocation.get(key).toString());
-       }
-       env.put(MPIConstants.MPIOUTPUTS,
-           resultNames.substring(0, resultNames.length() - 1).toString());
-     }
+    // Set the env variables to be setup in the env where the application master
+    // will be run
+    LOG.info("Set the environment for the application master and mpi application");
+    Map<String, String> env = new HashMap<String, String>();
+    // put location of mpi app and appmaster.jar into env
+    // using the env info, the application master will create the correct local
+    // resource for the
+    // eventual containers that will be launched to execute the shell scripts
+    env.put(MPIConstants.MPIEXECLOCATION, mpiAppDst.toUri().toString());
+    env.put(MPIConstants.MPIEXECTIMESTAMP,
+        Long.toString(mpiAppFileStatus.getModificationTime()));
+    env.put(MPIConstants.MPIEXECLEN, Long.toString(mpiAppFileStatus.getLen()));
+    env.put(MPIConstants.APPJARLOCATION, appJarDst.toUri().toString());
+    env.put(MPIConstants.APPJARTIMESTAMP,
+        Long.toString(appJarDestStatus.getModificationTime()));
+    env.put(MPIConstants.APPJARLEN, Long.toString(appJarDestStatus.getLen()));
+    if (!mpiOptions.isEmpty()) {
+      env.put(MPIConstants.MPIOPTIONS, mpiOptions);
+    }
+    env.put(MPIConstants.PROCESSESPERCONTAINER, String.valueOf(ppc));
+    Set<String> keyFiles = fileToLocation.keySet();
+    StringBuilder names = new StringBuilder(50);
+    if (keyFiles != null && keyFiles.size() > 0) {
+      Iterator<String> itKeys = keyFiles.iterator();
+      while (itKeys.hasNext()) {
+        String key = itKeys.next();
+        // TODO hard coding with '@'
+        names.append(key).append("@");
+        env.put(key, fileToLocation.get(key).toString());
+      }
+      env.put(MPIConstants.MPIINPUTS, names.substring(0, names.length() - 1));
+    }
 
-     // Add AppMaster.jar location to classpath. At some point we should not be
-     // required to add the hadoop specific classpaths to the env. It should be
-     // provided out of the box. For now setting all required classpaths
-     // including
-     // the classpath to "." for the application jar
-     StringBuilder classPathEnv = new StringBuilder("${CLASSPATH}:./*");
-     for (String c : conf.getStrings(
-         MPIConfiguration.YARN_APPLICATION_CLASSPATH,
-         MPIConfiguration.DEFAULT_MPI_APPLICATION_CLASSPATH)) {
-       classPathEnv.append(':');
-       classPathEnv.append(c.trim());
-     }
+    // TODO
+    env.put(MPIConstants.ALLOCATOR,
+        MPIConfiguration.DEFAULT_MPI_CONTAINER_ALLOCATOR);
 
-     // add the runtime classpath needed for tests to work
-     String testRuntimeClassPath = Client.getTestRuntimeClasspath();
-     classPathEnv.append(':');
-     classPathEnv.append(testRuntimeClassPath);
-     env.put("CLASSPATH", classPathEnv.toString());
+    Set<String> keyResults = resultToLocation.keySet();
+    StringBuilder resultNames = new StringBuilder(50);
+    if (keyResults != null && keyResults.size() > 0) {
+      Iterator<String> itKeys = keyResults.iterator();
+      while (itKeys.hasNext()) {
+        String key = itKeys.next();
+        resultNames.append(key).append("@");
+        env.put(key, resultToLocation.get(key));
+      }
+      env.put(MPIConstants.MPIOUTPUTS,
+          resultNames.substring(0, resultNames.length() - 1));
+    }
 
-     // TODO Add the system path into the environment, this is important,
-     // otherwise we cannot find mpiexec or smpd
-     env.put("PATH", System.getenv("PATH"));
+    // Add AppMaster.jar location to classpath. At some point we should not be
+    // required to add the hadoop specific classpaths to the env. It should be
+    // provided out of the box. For now setting all required classpaths
+    // including
+    // the classpath to "." for the application jar
+    StringBuilder classPathEnv = new StringBuilder("${CLASSPATH}:./*");
+    for (String c : conf.getStrings(
+        MPIConfiguration.YARN_APPLICATION_CLASSPATH,
+        MPIConfiguration.DEFAULT_MPI_APPLICATION_CLASSPATH)) {
+      classPathEnv.append(':');
+      classPathEnv.append(c.trim());
+    }
 
-     // Set the necessary command to execute the application master
-     Vector<CharSequence> vargs = new Vector<CharSequence>(30);
-     // Set java executable command
-     LOG.info("Setting up app master command");
-     vargs.add("${JAVA_HOME}" + "/bin/java");
-     // Set Xmx based on am memory size
-     vargs.add("-Xmx" + amMemory + "m");
-     // log are specified by the nodeManager's container-log4j.properties and
-     // client can specify the MPI_AM_LOG_LEVEL and MPI_AM_LOG_SIZE
-     // set java opts except memory
-     if (!StringUtils.isBlank(jvmOptions)) {
-       vargs.add(jvmOptions);
-     }
+    // add java class path
+    String classPath = System.getenv("CLASSPATH");
+    classPathEnv.append(':');
+    classPathEnv.append(classPath);
 
-     // Set class name
-     vargs.add("org.apache.hadoop.yarn.mpi.server.ApplicationMaster");
-     // Set params for Application Master
-     vargs.add("--container_memory " + String.valueOf(containerMemory));
-     vargs.add("--num_containers " + String.valueOf(numContainers));
-     vargs.add("--priority " + String.valueOf(containerPriority));
-     if (debugFlag) {
-       vargs.add("--debug");
-     }
-     vargs.add("1>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR
-         + "/AppMaster.stdout");
-     vargs.add("2>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR
-         + "/AppMaster.stderr");
-     // Get final commmand
-     StringBuilder command = new StringBuilder();
-     for (CharSequence str : vargs) {
-       command.append(str).append(" ");
-     }
+    // add the runtime classpath needed for tests to work
+    String testRuntimeClassPath = Client.getTestRuntimeClasspath();
+    classPathEnv.append(':');
+    classPathEnv.append(testRuntimeClassPath);
 
-     LOG.info("Completed setting up app master command " + command.toString());
-     List<String> commands = new ArrayList<String>();
-     commands.add(command.toString());
+    LOG.info("CLASSPATH: " + classPathEnv);
 
-     // Set up resource type requirements
-     // For now, only memory is supported so we set memory requirements
-     Resource capability = Records.newRecord(Resource.class);
-     capability.setMemory(amMemory);
-     appContext.setResource(capability);
+    env.put("CLASSPATH", classPathEnv.toString());
 
-     // Set up the container launch context for the application master
-     ContainerLaunchContext amContainer = ContainerLaunchContext.newInstance(
-         localResources, env, commands, null, null, null);
+    // TODO Add the system path into the environment, this is important,
+    // otherwise we cannot find mpiexec or smpd
+    env.put("PATH", System.getenv("PATH"));
 
-     appContext.setAMContainerSpec(amContainer);
+    // Set the necessary command to execute the application master
+    Vector<CharSequence> vargs = new Vector<CharSequence>(30);
+    // Set java executable command
+    LOG.info("Setting up app master command");
+    vargs.add("${JAVA_HOME}" + "/bin/java");
+    // Set Xmx based on am memory size
+    vargs.add("-Xmx" + amMemory + "m");
+    // log are specified by the nodeManager's container-log4j.properties and
+    // client can specify the MPI_AM_LOG_LEVEL and MPI_AM_LOG_SIZE
+    // set java opts except memory
+    if (!StringUtils.isBlank(jvmOptions)) {
+      vargs.add(jvmOptions);
+    }
 
-     // Set the priority for the application master
-     Priority pri = Records.newRecord(Priority.class);
-     // TODO - what is the range for priority? how to decide?
-     pri.setPriority(amPriority);
-     appContext.setPriority(pri);
+    // Set class name
+    vargs.add("org.apache.hadoop.yarn.mpi.server.ApplicationMaster");
+    // Set params for Application Master
+    vargs.add("--container_memory " + String.valueOf(containerMemory));
+    vargs.add("--container_gpu_num " + String.valueOf(containerGpuNum));
+    vargs.add("--num_containers " + String.valueOf(numContainers));
+    vargs.add("--priority " + String.valueOf(containerPriority));
+    vargs.add("--mpi_type " + mpiType);
+    vargs.add("--mpi_app_type " + mpiAppType);
+    vargs.add("--app_name " + appName);
+    if (debugFlag) {
+      vargs.add("--debug");
+    }
+    vargs.add("1>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR
+        + "/AppMaster.stdout");
+    vargs.add("2>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR
+        + "/AppMaster.stderr");
+    // Get final commmand
+    StringBuilder command = new StringBuilder();
+    for (CharSequence str : vargs) {
+      command.append(str).append(" ");
+    }
 
-     // Set the queue to which this application is to be submitted in the RM
-     appContext.setQueue(amQueue);
+    LOG.info("Completed setting up app master command " + command.toString());
+    List<String> commands = new ArrayList<String>();
+    commands.add(command.toString());
 
-     // Create the request to send to the applications manager
-     SubmitApplicationRequest appRequest = Records
-         .newRecord(SubmitApplicationRequest.class);
-     appRequest.setApplicationSubmissionContext(appContext);
+    // Set up resource type requirements
+    // For now, only memory is supported so we set memory requirements
+    Resource capability = Records.newRecord(Resource.class);
+    capability.setMemory(amMemory);
+    appContext.setResource(capability);
 
-     // Submit the application to the applications manager
-     // Ignore the response as either a valid response object is returned on
-     // success
-     // or an exception thrown to denote some form of a failure
-     try {
-       LOG.info("Submitting application to ASM");
-       SubmitApplicationResponse submitResp = applicationsManager
-           .submitApplication(appRequest);
-       isRunning.set(submitResp != null);
-       LOG.info("Submisstion result: " + isRunning);
-     } catch (YarnException e) {
-       LOG.error("Submission failure.", e);
-       return false;
-     }
+    // Set up the container launch context for the application master
+    ContainerLaunchContext amContainer = ContainerLaunchContext.newInstance(
+        localResources, env, commands, null, null, null);
 
-     // Monitor the application
-     return monitorApplication();
+    appContext.setAMContainerSpec(amContainer);
+
+    // Set the priority for the application master
+    Priority pri = Records.newRecord(Priority.class);
+    // TODO - what is the range for priority? how to decide?
+    pri.setPriority(amPriority);
+    appContext.setPriority(pri);
+
+    // Set the queue to which this application is to be submitted in the RM
+    appContext.setQueue(amQueue);
+
+    // Create the request to send to the applications manager
+    SubmitApplicationRequest appRequest = Records
+        .newRecord(SubmitApplicationRequest.class);
+    appRequest.setApplicationSubmissionContext(appContext);
+
+    // Submit the application to the applications manager
+    // Ignore the response as either a valid response object is returned on
+    // success
+    // or an exception thrown to denote some form of a failure
+    try {
+      LOG.info("Submitting application to ASM");
+      SubmitApplicationResponse submitResp = applicationsManager
+          .submitApplication(appRequest);
+      isRunning.set(submitResp != null);
+      LOG.info("Submisstion result: " + isRunning);
+    } catch (YarnException e) {
+      LOG.error("Submission failure.", e);
+      return false;
+    }
+
+    // Monitor the application
+    return monitorApplication();
   }
 
   /**
    * Monitor the submitted application for completion. Kill application if time
    * expires.
+   * <p>
+   * Application Id of application to be monitored
    *
-   * @param appId
-   *          Application Id of application to be monitored
    * @return true if application completed successfully
-   * @throws IOException
-   *           , YarnException
+   * @throws IOException , YarnException
    */
   private boolean monitorApplication() throws IOException, YarnException {
 
@@ -673,7 +735,7 @@ public class Client {
       ApplicationReport report = Utilities.getApplicationReport(appId,
           applicationsManager);
       assert (report != null);
-      if (mpiClient == null && isRunning.get() == true) {
+      if (mpiClient == null && isRunning.get()) {
         LOG.info("Got application report from ASM for" + ", appId="
             + appId.getId() + ", clientToken=" + report.getClientToAMToken()
             + ", appDiagnostics=" + report.getDiagnostics()
@@ -742,11 +804,10 @@ public class Client {
    * Get a new application from the ASM
    *
    * @return New Application
-   * @throws IOException
-   *           , YarnException
+   * @throws IOException , YarnException
    */
   private GetNewApplicationResponse getApplication() throws IOException,
-  YarnException {
+      YarnException {
     GetNewApplicationRequest request = Records
         .newRecord(GetNewApplicationRequest.class);
     GetNewApplicationResponse response = applicationsManager

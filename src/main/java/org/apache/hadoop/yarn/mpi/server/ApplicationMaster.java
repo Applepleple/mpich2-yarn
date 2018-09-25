@@ -36,16 +36,8 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.service.CompositeService;
 import org.apache.hadoop.yarn.api.ApplicationConstants;
 import org.apache.hadoop.yarn.api.protocolrecords.RegisterApplicationMasterResponse;
-import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
-import org.apache.hadoop.yarn.api.records.ApplicationId;
+import org.apache.hadoop.yarn.api.records.*;
 import org.apache.hadoop.yarn.api.records.Container;
-import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
-import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
-import org.apache.hadoop.yarn.api.records.LocalResource;
-import org.apache.hadoop.yarn.api.records.LocalResourceType;
-import org.apache.hadoop.yarn.api.records.LocalResourceVisibility;
-import org.apache.hadoop.yarn.api.records.Priority;
-import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.client.api.AMRMClient.ContainerRequest;
 import org.apache.hadoop.yarn.client.api.async.AMRMClientAsync;
 import org.apache.hadoop.yarn.client.api.async.NMClientAsync;
@@ -55,10 +47,7 @@ import org.apache.hadoop.yarn.mpi.MPIConfiguration;
 import org.apache.hadoop.yarn.mpi.MPIConstants;
 import org.apache.hadoop.yarn.mpi.server.handler.MPIAMRMAsyncHandler;
 import org.apache.hadoop.yarn.mpi.server.handler.MPINMAsyncHandler;
-import org.apache.hadoop.yarn.mpi.util.FileSplit;
-import org.apache.hadoop.yarn.mpi.util.InputFile;
-import org.apache.hadoop.yarn.mpi.util.MPIResult;
-import org.apache.hadoop.yarn.mpi.util.SshKeyPair;
+import org.apache.hadoop.yarn.mpi.util.*;
 import org.apache.hadoop.yarn.mpi.util.Utilities;
 import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.hadoop.yarn.util.Records;
@@ -85,6 +74,8 @@ public class ApplicationMaster extends CompositeService {
   private int numTotalContainers = 1;
   // Memory to request for the container on which the shell command will run
   private int containerMemory = 10;
+  // The number of GPU to request for the container on which the shell command will run
+  private int containerGpuNum = 0;
   // Priority of the request
   private int requestPriority;
   // Simple flag to denote whether all works is done
@@ -111,8 +102,17 @@ public class ApplicationMaster extends CompositeService {
   private String mpiExecDir;
   // MPI program options
   private String mpiOptions = "";
-  private Map<String, Integer> hostToProcNum;
+  // MPI type
+  private String mpiType = "";
+  // MPI app type
+  private String mpiAppType = "";
+  // App name
+  private String appName = "";
+  private Map<String, List<Container>> hostContainers;
   private List<Container> distinctContainers;
+  private Map<String, String> hostRankInfoMap = new HashMap<>();
+  private StringBuilder hostFileInfo = new StringBuilder();
+  private StringBuilder rankFileInfo = new StringBuilder();
   private String phrase = "";
   private int port = 5000;
   // A queue that keep track of the mpi messages
@@ -154,8 +154,7 @@ public class ApplicationMaster extends CompositeService {
   private MPINMAsyncHandler nmAsyncHandler;
 
   /**
-   * @param args
-   *          Command line args
+   * @param args Command line args
    */
   public static void main(String[] args) {
     boolean result = false;
@@ -222,8 +221,7 @@ public class ApplicationMaster extends CompositeService {
   /**
    * Parse command line options
    *
-   * @param args
-   *          Command line args
+   * @param args Command line args
    * @return Whether init successful and run should be invoked
    * @throws ParseException
    * @throws IOException
@@ -235,8 +233,17 @@ public class ApplicationMaster extends CompositeService {
         "App Attempt ID. Not to be used unless for testing purposes");
     opts.addOption("container_memory", true,
         "Amount of memory in MB to be requested to run the shell command");
+    opts.addOption("container_gpu_num", true,
+        "The number of gpus to be requested to run the shell command");
     opts.addOption("num_containers", true,
         "No. of containers on which the shell command needs to be executed");
+    opts.addOption("mpi_type", true, "Mpi type that mpi apps use. "
+            + "Support "  + Utilities.getSupportedMpiType()
+            + ". Default " + Utilities.getDefaultMpiType());
+    opts.addOption("mpi_app_type", true, "Mpi app type. "
+        + "Support "  + Utilities.getSupportedMpiAppType()
+        + ". Default " + Utilities.getDefaultMpiAppType());
+    opts.addOption("app_name", true, "MPI Program App Name");
     opts.addOption("priority", true, "Application Priority. Default 0");
     opts.addOption("o", "mpi-options", true, "MPI Program Options");
     opts.addOption("debug", false, "Dump out debug information");
@@ -393,9 +400,21 @@ public class ApplicationMaster extends CompositeService {
 
     mpiExecDir = Utilities.getMpiExecDir(conf, appAttemptID);
 
+    mpiType = cliParser.getOptionValue("mpi_type", Utilities.getDefaultMpiType());
+    mpiAppType = cliParser.getOptionValue("mpi_app_type", Utilities.getDefaultMpiAppType());
+    appName = cliParser.getOptionValue("app_name", "");
+    if (StringUtils.isEmpty(appName)) {
+      throw new IllegalArgumentException(
+          "Illegal mpi app name");
+    }
+
     containerMemory = Integer.parseInt(cliParser.getOptionValue(
         "container_memory", "10"));
     LOG.info("Container memory is " + containerMemory + " MB");
+
+    containerGpuNum = Integer.parseInt(cliParser.getOptionValue(
+        "container_gpu_num", "10"));
+    LOG.info("The number of GPU of each container is " + containerGpuNum);
 
     requestPriority = Integer.parseInt(cliParser
         .getOptionValue("priority", "0"));
@@ -410,8 +429,7 @@ public class ApplicationMaster extends CompositeService {
   /**
    * Helper function to print usage
    *
-   * @param opts
-   *          Parsed command line options
+   * @param opts Parsed command line options
    */
   private void printUsage(Options opts) {
     new HelpFormatter().printHelp("ApplicationMaster", opts);
@@ -422,7 +440,7 @@ public class ApplicationMaster extends CompositeService {
    *
    * @param downLoadFiles
    * @param fileToLocation
-   * @param containerSize
+   * @param containers
    * @return
    */
   private ConcurrentHashMap<Integer, List<FileSplit>> getFileSplit(
@@ -498,6 +516,7 @@ public class ApplicationMaster extends CompositeService {
 
   /**
    * Initialize and start RPC services
+   *
    * @throws IOException
    * @throws NoSuchAlgorithmException
    */
@@ -512,6 +531,7 @@ public class ApplicationMaster extends CompositeService {
     rmClientAsync = AMRMClientAsync.createAMRMClientAsync(1000, rmAsyncHandler);
     rmClientAsync.init(conf);
     rmClientAsync.start();
+    rmAsyncHandler.setRmClientAsync(rmClientAsync);
 
     // also init NMClient here
     LOG.info("Creating AM<->NM Protocol...");
@@ -537,7 +557,7 @@ public class ApplicationMaster extends CompositeService {
     LOG.info("Application Master tracking url is " + appMasterTrackingUrl);
 
     amPublicKey = generateKeyPairAndLoadPublicKey();
-    LOG.info("Generated public key: "+amPublicKey);
+    LOG.info("Generated public key: " + amPublicKey);
   }
 
   private String keypair_position;
@@ -556,8 +576,7 @@ public class ApplicationMaster extends CompositeService {
    * Generate public key and private key pairs and set the public key to the
    * environment variable for containers to use
    *
-   * @throws IOException
-   *           Mostly ssh-keygen doesn't exist
+   * @throws IOException              Mostly ssh-keygen doesn't exist
    * @throws NoSuchAlgorithmException
    */
   public String generateKeyPairAndLoadPublicKey()
@@ -577,18 +596,18 @@ public class ApplicationMaster extends CompositeService {
     SshKeyPair sshKeyPair = new SshKeyPair(null, null);
     File privateKeyFile = new File(keypair_position);
     File publicKeyFile = new File(keypair_position + ".pub");
-    if(privateKeyFile.exists()){
+    if (privateKeyFile.exists()) {
       LOG.info("Private key file already existed, delete them.");
       privateKeyFile.delete();
       privateKeyFile.createNewFile();
-    }else{
+    } else {
       privateKeyFile.createNewFile();
     }
 
-    privateKeyFile.setReadable(false,false);
-    privateKeyFile.setWritable(false,false);
-    privateKeyFile.setReadable(true,true);
-    privateKeyFile.setWritable(true,true);
+    privateKeyFile.setReadable(false, false);
+    privateKeyFile.setWritable(false, false);
+    privateKeyFile.setReadable(true, true);
+    privateKeyFile.setWritable(true, true);
 
     FileWriter fileWriter = new FileWriter(privateKeyFile);
     fileWriter.write(sshKeyPair.getPrivateKeyFileContent());
@@ -603,41 +622,6 @@ public class ApplicationMaster extends CompositeService {
     LOG.info("Keypair with public key: " + publicKey);
 
     return publicKey;
-
-    // Runtime rt = Runtime.getRuntime();
-    // Utilities.printRelevantParams("Before ssh-keygen", conf);
-    // String command = "ssh-keygen -t rsa -q -N \"$EMPTY_PASSWORD\" -f " +
-    // keypair_position;
-    // LOG.info("Executing command " + command);
-    // Process proc = rt.exec(command,null,tempDir);
-    // try {
-    // proc.waitFor();
-    // } catch (InterruptedException e) {
-    // LOG.info("Command is interrupted unintendedly.");
-    // }
-    // Scanner pcStdout = new Scanner(proc.getInputStream());
-    // while (pcStdout.hasNextLine()) {
-    // String line = "[stdout] " + pcStdout.nextLine();
-    // LOG.info(line);
-    // appendMsg(line);
-    // }
-    // pcStdout.close();
-    // Scanner pcStderr = new Scanner(proc.getErrorStream());
-    // while (pcStderr.hasNextLine()) {
-    // String line = "[stderr] " + pcStderr.nextLine();
-    // LOG.info(line);
-    // appendMsg(line);
-    // }
-    // pcStderr.close();
-    //
-    // Scanner sc = new Scanner(publicKeyFile);
-    // if (sc.hasNextLine()) {
-    // String publicKey = sc.nextLine();
-    // LOG.info("The public key is " + publicKey);
-    // return publicKey;
-    // } else {
-    // return null;
-    // }
   }
 
   String amPublicKey;
@@ -650,15 +634,8 @@ public class ApplicationMaster extends CompositeService {
    */
   public boolean run() throws IOException, NoSuchAlgorithmException {
     LOG.info("Starting ApplicationMaster");
+    LOG.info("AM start time: " + System.currentTimeMillis());
 
-    // debug_launch_mpiexec();
-
-    // Connect to ResourceManager
-
-    // TODO Setup local RPC Server to accept status requests directly from
-    // clients
-    // TODO use the rpc port info to register with the RM for the client to send
-    // requests to this app master
     initAndStartRPCServices();
 
     // Register self with ResourceManager
@@ -667,24 +644,29 @@ public class ApplicationMaster extends CompositeService {
       // Dump out information about cluster capability as seen by the
       // resource manager
       int maxMem = response.getMaximumResourceCapability().getMemory();
-      // LOG.info("Min mem capabililty of resources in this cluster " + minMem);
       LOG.info("Max mem capabililty of resources in this cluster " + maxMem);
       if (containerMemory > maxMem) {
-        LOG.info("Container memory specified above max threshold of cluster. Using max value."
+        LOG.warn("Container memory specified above max threshold of cluster. Using max value."
             + ", specified=" + containerMemory + ", max=" + maxMem);
         containerMemory = maxMem;
       }
+
+      if (containerGpuNum > 0) {
+        int maxGpu = response.getMaximumResourceCapability().getGpuNum();
+        LOG.info("Max number of gpus of resources in this cluster " + maxGpu);
+        if (containerGpuNum > maxGpu) {
+          LOG.warn("The number of gpus of each container specified above max threshold of cluster." +
+              "Using max value, specified=" + containerGpuNum + ", max=" + maxGpu);
+          containerGpuNum = maxGpu;
+        }
+      }
+
     } catch (Exception e) {
       LOG.error("Error registering to ResourceManger.");
       e.printStackTrace();
     }
 
     rmAsyncHandler.setNeededContainersCount(numTotalContainers);
-
-    for (int i = 0; i < numTotalContainers; i++) {
-      ContainerRequest req = setupContainerAskForRM();
-      rmClientAsync.addContainerRequest(req);
-    }
 
     int allocateInterval = conf.getInt(MPIConfiguration.MPI_ALLOCATE_INTERVAL,
         1000);
@@ -693,14 +675,21 @@ public class ApplicationMaster extends CompositeService {
     LOG.info("Try to allocate " + numTotalContainers
         + " containers with heartbeat interval = " + allocateInterval + " ms.");
 
+    for (int i = 0; i < numTotalContainers; i++) {
+      ContainerRequest req = setupContainerAskForRM();
+      rmClientAsync.addContainerRequest(req);
+    }
+
     while (rmAsyncHandler.getAllocatedContainerNumber() < numTotalContainers) {
       Utilities.sleep(allocateInterval);
     }
 
     LOG.info(numTotalContainers + " containers allocated.");
 
-    hostToProcNum = rmAsyncHandler.getHostToProcNum();
     distinctContainers = rmAsyncHandler.getDistinctContainers();
+    hostContainers = rmAsyncHandler.getHostToContainer();
+
+    generateMpiFileInfo();
 
     // key(Integer) represent the containerID;value(List<FileSplit>) represent
     // the files which need to be downloaded
@@ -709,17 +698,26 @@ public class ApplicationMaster extends CompositeService {
     for (Container allocatedContainer : distinctContainers) {
       String host = allocatedContainer.getNodeId().getHost();
       containerHosts.add(host);
-      LOG.info("Launching command on a new container" + ", containerId="
+      StringBuilder msg = new StringBuilder();
+      msg.append("Launching command on a new container" + ", containerId="
           + allocatedContainer.getId() + ", containerNode="
           + allocatedContainer.getNodeId().getHost() + ":"
           + allocatedContainer.getNodeId().getPort() + ", containerNodeURI="
           + allocatedContainer.getNodeHttpAddress()
           // + ", containerState" + allocatedContainer.getState()
-          + ", containerResourceMemory"
-          + allocatedContainer.getResource().getMemory());
+          + ", containerResourceMemory="
+          + allocatedContainer.getResource().getMemory()
+          + ", containerGpus=");
+      if (containerGpuNum > 0) {
+        for (Gpu gpu : allocatedContainer.getResource().getGpus()) {
+          msg.append(gpu + " ");
+        }
+      }
+      LOG.info(msg.toString());
+      appendMsg(msg.toString());
 
-      Boolean result = launchContainerAsync(allocatedContainer,
-          splits.get(Integer.valueOf(allocatedContainer.getId().getId())),
+      launchContainerAsync(allocatedContainer,
+          splits.get(allocatedContainer.getId().getId()),
           resultToDestination.values());
 
       mpdListener.addContainer(new ContainerId(allocatedContainer.getId()));
@@ -734,19 +732,19 @@ public class ApplicationMaster extends CompositeService {
         Utilities.sleep(PULL_INTERVAL);
       }
       this.appendMsg("all containers are launched successfully, executing mpiexec...");
-      LOG.info("all containers are launched successfully, executing mpiexec...");
+      this.appendMsg("Task start time :" + System.currentTimeMillis());
       boolean mpiExecSuccess = launchMpiExec();
+      this.appendMsg("Task end time :" + System.currentTimeMillis());
 
       LOG.info("mpiexec completed, wait for daemons doing clean-ups.");
       mpdListener.setAmFinished();
-      while (!mpdListener.isAllMPDFinished()){
+      while (!mpdListener.isAllMPDFinished()) {
         Utilities.sleep(PULL_INTERVAL);
       }
       LOG.info("daemons are all finished.");
 
       // When the application completes, it should send a finish application
-      // signal
-      // to the RM
+      // signal to the RM
       LOG.info("Application completed. Signalling finish to RM");
 
       if (mpiExecSuccess) {
@@ -773,71 +771,6 @@ public class ApplicationMaster extends CompositeService {
   }
 
   /**
-   * Encountered some problem at the beginning, this method is used for
-   * debugging
-   *
-   * @throws IOException
-   */
-  // private void debug_launch_mpiexec() throws IOException {
-  // String pwdPath = System.getenv().get("PWD");
-  // File pwd = new File(pwdPath);
-  // if (!pwd.exists()) {
-  // LOG.info("Current working folder " + pwdPath + " not exist, create it.");
-  // pwd.mkdirs();
-  // } else {
-  // LOG.info("Current working folder " + pwdPath + " still exists.");
-  // }
-  //
-  // LOG.info("Try to execute mpiexec -launcher ssh -hosts sandking04:2,sandking05:2 /home/hadoop/hadoop-2.4.1/tmp/mpiexecs/appattempt_1408272055127_0008_000001/MPIExec");
-  // String[] params = {
-  // "mpiexec",
-  // "-launcher",
-  // "ssh",
-  // "-hosts",
-  // "sandking04:2,sandking05:2",
-  // "/home/hadoop/hadoop-2.4.1/tmp/mpiexecs/appattempt_1408272055127_0008_000001/MPIExec"
-  // };
-  // String[] envp = {
-  // "PATH=/home/hadoop/hadoop-2.4.1/bin:/home/hadoop/hadoop-2.4.1/sbin:/home/hadoop/jdk1.7.0_25/bin:/home/hadoop/jdk1.7.0_25/jre/bin:/home/hadoop/protobuf-2.5.0/bin:/home/hadoop/mpich-3.1.2/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games"
-  // };
-  // File file = new File("/home/hadoop");
-  // final Process proc = Runtime.getRuntime().exec(params, null, file);
-  // Thread stdinThread = new Thread(new Runnable() {
-  // @Override
-  // public void run() {
-  // Scanner pcStdout = new Scanner(proc.getInputStream());
-  // while (pcStdout.hasNextLine()) {
-  // String line = "[stdout] " + pcStdout.nextLine();
-  // LOG.info(line);
-  // appendMsg(line);
-  // }
-  // }
-  // });
-  // stdinThread.setDaemon(true);
-  // stdinThread.start();
-  //
-  // Thread stderrThread = new Thread(new Runnable() {
-  // @Override
-  // public void run() {
-  // Scanner pcStderr = new Scanner(proc.getErrorStream());
-  // while (pcStderr.hasNextLine()) {
-  // String line = "[stderr] " + pcStderr.nextLine();
-  // LOG.info(line);
-  // appendMsg(line);
-  // }
-  // }
-  // });
-  // stderrThread.setDaemon(true);
-  // stderrThread.start();
-  // try {
-  // LOG.info("Returned " + proc.waitFor());
-  // } catch (InterruptedException e1) {
-  // // TODO Auto-generated catch block
-  // e1.printStackTrace();
-  // }
-  // }
-
-  /**
    * Setup the request that will be sent to the RM for the container ask.
    *
    * @return the setup ResourceRequest to be sent to RM
@@ -856,6 +789,9 @@ public class ApplicationMaster extends CompositeService {
     Resource capability = Records.newRecord(Resource.class);
     capability.setMemory(containerMemory);
     capability.setVirtualCores(1);
+    if (containerGpuNum > 0) {
+      capability.setGpuNum(containerGpuNum);
+    }
 
     ContainerRequest request = new ContainerRequest(capability, null, null, pri);
     LOG.info("Requested container ask: " + request.toString());
@@ -887,13 +823,6 @@ public class ApplicationMaster extends CompositeService {
    */
   private void unregisterApp(FinalApplicationStatus status, String diagnostics) {
     try {
-      // for (Container container : rmAsyncHandler.getAcquiredContainers()) {
-      // nmClientAsync.stopContainerAsync(container.getId(),
-      // container.getNodeId());
-      // }
-
-      // LOG.info("Wait for nmClientAsync.waitForServiceToStop");
-      // nmClientAsync.waitForServiceToStop(0);
 
       // When the application completes, it should stop all running containers
       LOG.info("Application completed. Stopping running containers");
@@ -915,33 +844,11 @@ public class ApplicationMaster extends CompositeService {
   }
 
   /**
-   * Application Master launches "mpiexec" process locally
+   * Append mpi options to launch command.
    *
-   * @return Whether the MPI executable successfully terminated
-   * @throws IOException
-   *
+   * @param commandBuilder
    */
-  private boolean launchMpiExec() throws IOException {
-    LOG.info("Launching mpiexec from the Application Master...");
-
-    StringBuilder commandBuilder = new StringBuilder(
-        "mpiexec -launcher ssh -hosts ");
-    Set<String> hosts = hostToProcNum.keySet();
-    boolean first = true;
-    for (String host : hosts) {
-      if (first) {
-        first = false;
-      } else {
-        commandBuilder.append(",");
-      }
-      commandBuilder.append(host);
-      commandBuilder.append(":");
-      commandBuilder.append(hostToProcNum.get(host));
-    }
-
-    commandBuilder.append(" ");
-    commandBuilder.append(mpiExecDir);
-    commandBuilder.append("/MPIExec");
+  private void appendMpiOptions(StringBuilder commandBuilder) {
     if (!mpiOptions.isEmpty()) {
       commandBuilder.append(" ");
       // replace the fileName with the hdfs path
@@ -964,12 +871,170 @@ public class ApplicationMaster extends CompositeService {
 
       commandBuilder.append(mpiOptions);
     }
+  }
+
+  /**
+   * Get mpich launch command with mpiexec.
+   *
+   * @return
+   */
+  private String getMpichLaunchCommand() {
+    LOG.info("Launching mpiexec with mpich from the Application Master...");
+    StringBuilder commandBuilder = new StringBuilder(
+        "mpiexec -launcher ssh -hosts ");
+    Set<String> hosts = hostContainers.keySet();
+    boolean first = true;
+    for (String host : hosts) {
+      if (first) {
+        first = false;
+      } else {
+        commandBuilder.append(",");
+      }
+      commandBuilder.append(host);
+      commandBuilder.append(":");
+      commandBuilder.append(hostContainers.get(host).size());
+    }
+
+    commandBuilder.append(" ");
+    if (mpiAppType.equals("python")) {
+      commandBuilder.append("python ");
+    }
+    commandBuilder.append(mpiExecDir);
+    commandBuilder.append(File.separator);
+    commandBuilder.append(appName);
+
+    appendMpiOptions(commandBuilder);
+
+    return commandBuilder.toString();
+  }
+
+  /**
+   * Get OpenMpi launch command with mpiexec.
+   *
+   * @return
+   */
+  private String getOpenMpiLaunchCommand() {
+    LOG.info("Launching mpirun with OpenMpi from the Application Master...");
+
+    String hostFilePath = mpiExecDir + File.separator + ".hostfile";
+    StringBuilder commandBuilder = new StringBuilder(
+        "mpirun -n " + numTotalContainers + " -hostfile " + hostFilePath);
+
+    writeHostFile();
+
+    commandBuilder.append(" ");
+    if (mpiAppType.equals("python")) {
+      commandBuilder.append("python ");
+    }
+    commandBuilder.append(mpiExecDir);
+    commandBuilder.append(File.separator);
+    commandBuilder.append(appName);
+
+    appendMpiOptions(commandBuilder);
+
+    commandBuilder.append(" ");
+    commandBuilder.append("--gpus_file_path " + mpiExecDir + File.separator + "GpuAllocateResult.txt");
+
+    return commandBuilder.toString();
+  }
+
+  private void writeHostFile() {
+    String hostFilePath = mpiExecDir + File.separator + ".hostfile";
+    writeFile(hostFilePath, hostFileInfo.toString());
+  }
+
+  private void writeRankFile() {
+    String rankFilePath = mpiExecDir + File.separator + ".rankfile";
+    writeFile(rankFilePath, rankFileInfo.toString());
+  }
+
+  private void writeFile(String filePath, String content) {
+    File hostFile = new File(filePath);
+    File hostFileDir = new File(hostFile.getParent());
+    if (!hostFileDir.exists()) {
+      hostFileDir.mkdirs();
+      hostFileDir.setWritable(true, false);
+    }
+    if (!hostFile.exists()) {
+      try {
+        hostFile.createNewFile();
+      } catch (IOException e) {
+        e.printStackTrace();
+      }
+    }
+    try (FileWriter fileWriter = new FileWriter(hostFile)) {
+      fileWriter.write(content);
+    } catch (Exception e) {
+      e.printStackTrace();
+      throw new MPDException("Unable to write host file.");
+    }
+  }
+
+  private void generateMpiFileInfo() {
+    Set<String> hosts = hostContainers.keySet();
+    Integer rankIndex = 0;
+    for (String host : hosts) {
+      rankIndex = generateHostRankInfo(host, rankIndex);
+    }
+  }
+
+  private int generateHostRankInfo(String host, int rankIndex) {
+    List<Container> containers = hostContainers.get(host);
+    StringBuilder stringBuilder = new StringBuilder();
+
+    // generate host file info
+    int procNum = hostContainers.get(host).size();
+//    hostFileInfo.append(host + " slots=" + procNum + " max_slots=" + procNum + "\n");
+    hostFileInfo.append(host + " : " + procNum + "\n");
+
+    for (int i = 0; i < containers.size(); i++, rankIndex++) {
+      // GPU allocation result
+      stringBuilder.append("GpuAllocateResult.txt");
+      stringBuilder.append(":");
+      if (containerGpuNum > 0) {
+        for (Gpu gpu : containers.get(i).getResource().getGpus()) {
+          stringBuilder.append(gpu.getIndex());
+          stringBuilder.append(",");
+        }
+      }
+      stringBuilder.deleteCharAt(stringBuilder.length()-1);
+      stringBuilder.append(";");
+
+      // generate rank file info
+      // TODO get total CPU core number
+      rankFileInfo.append("rank " + rankIndex + "=" + host + " slot=" + (i%8) + "\n");
+    }
+    stringBuilder.deleteCharAt(stringBuilder.length()-1);
+    hostRankInfoMap.put(host, stringBuilder.toString());
+    return rankIndex;
+  }
+
+  /**
+   * Application Master launches "mpiexec" process locally
+   *
+   * @return Whether the MPI executable successfully terminated
+   * @throws IOException
+   */
+  private boolean launchMpiExec() throws IOException {
+
+    String launchCommand;
+    if (mpiType.equals("mpich")) {
+      launchCommand = getMpichLaunchCommand();
+    } else if (mpiType.equals("ompi")) {
+      launchCommand = getOpenMpiLaunchCommand();
+    } else {
+      throw new MPDException("Unsupported mpi type.");
+    }
+
     //TODO Here we canceled mandatory host key checking, and may have potential risk for middle-man-attack
-    String[] envs = {"PATH="+System.getenv("PATH"), "HYDRA_LAUNCHER_EXTRA_ARGS=-o StrictHostKeyChecking=no -i " + keypair_position};
-    LOG.info("Executing command:" + commandBuilder.toString());
+    String[] envs = {"PATH=" + System.getenv("PATH"),
+        "HYDRA_LAUNCHER_EXTRA_ARGS=-o StrictHostKeyChecking=no -i " + keypair_position};
+    String msg = "Executing command:" + launchCommand;
+    LOG.info(msg);
+    appendMsg(msg);
     File mpiPWD = new File(mpiExecDir);
     Runtime rt = Runtime.getRuntime();
-    final Process pc = rt.exec(commandBuilder.toString(), envs, mpiPWD);
+    final Process pc = rt.exec(launchCommand, envs, mpiPWD);
 
     Thread stdinThread = new Thread(new Runnable() {
       @Override
@@ -1008,7 +1073,7 @@ public class ApplicationMaster extends CompositeService {
         return true;
       }
     } catch (InterruptedException e) {
-      LOG.error("mpiexec Thread is nterruptted!", e);
+      LOG.error("Launch Mpi Thread is interrupted!", e);
     }
     return false;
   }
@@ -1022,17 +1087,10 @@ public class ApplicationMaster extends CompositeService {
    * @return
    */
   public Boolean launchContainerAsync(Container container,
-      List<FileSplit> fileSplits, Collection<MPIResult> results) {
+                                      List<FileSplit> fileSplits, Collection<MPIResult> results) {
 
     LOG.info("Setting up container launch container for containerid="
         + container.getId());
-
-    /*
-     * String jobUserName =
-     * System.getenv(ApplicationConstants.Environment.USER.name());
-     * ctx.setUser(jobUserName);
-     * LOG.info("Setting user in ContainerLaunchContext to: " + jobUserName);
-     */
 
     // Set the local resources for each container
     Map<String, LocalResource> localResources = new HashMap<String, LocalResource>();
@@ -1051,7 +1109,7 @@ public class ApplicationMaster extends CompositeService {
     }
     mpiRsrc.setTimestamp(hdfsMPIExecTimestamp);
     mpiRsrc.setSize(hdfsMPIExecLen);
-    localResources.put("MPIExec", mpiRsrc);
+    localResources.put(appName, mpiRsrc);
     assert (!hdfsAppJarLocation.isEmpty());
     LocalResource appJarRsrc = Records.newRecord(LocalResource.class);
     appJarRsrc.setType(LocalResourceType.FILE);
@@ -1076,6 +1134,7 @@ public class ApplicationMaster extends CompositeService {
 
     env.put("CLASSPATH", System.getenv("CLASSPATH"));
     env.put("MPIEXECDIR", mpiExecDir);
+    env.put("MPIAPPNAME", appName);
 
     env.put(MPIConstants.CONTAININPUT, Utilities.encodeSplit(fileSplits));
     env.put(MPIConstants.APPATTEMPTID, appAttemptID.toString());
@@ -1087,6 +1146,10 @@ public class ApplicationMaster extends CompositeService {
 
     env.put("PATH", System.getenv("PATH"));
     env.put(MPIConstants.AM_PUBLIC_KEY, amPublicKey);
+    env.put("HOSTRANKINFO", hostRankInfoMap.get(container.getNodeId().getHost()));
+
+    appendMsg("Host rank info of " + container.getNodeId().getHost() + " " +
+        hostRankInfoMap.get(container.getNodeId().getHost()));
 
     containerToStatus.put(container.getId().toString(), MPDStatus.UNDEFINED);
     // Set the necessary command to execute on the allocated container
@@ -1096,21 +1159,12 @@ public class ApplicationMaster extends CompositeService {
     vargs.add("-Xmx" + containerMemory + "m");
     // log are specified by the nodeManager's container-log4j.properties and
     // nodemanager can specify the MPI_AM_LOG_LEVEL and MPI_AM_LOG_SIZE
-    /*
-     * String logLevel = conf.get(MPIConfiguration.MPI_CONTAINER_LOG_LEVEL,
-     * MPIConfiguration.DEFAULT_MPI_CONTAINER_LOG_LEVEL); long logSize =
-     * conf.getLong(MPIConfiguration.MPI_CONTAINER_LOG_SIZE,
-     * MPIConfiguration.DEFAULT_MPI_CONTAINER_LOG_SIZE);
-     * Utilities.addLog4jSystemProperties(logLevel, logSize, vargs);
-     */
     String javaOpts = conf.get(
         MPIConfiguration.MPI_CONTAINER_JAVA_OPTS_EXCEPT_MEMORY, "");
     if (!StringUtils.isBlank(javaOpts)) {
       vargs.add(javaOpts);
     }
     vargs.add("org.apache.hadoop.yarn.mpi.server.Container");
-    // vargs.add("-p " + port);
-    // vargs.add("-f " + phrase);
     // Add log redirect params
     // FIXME Redirect the output to HDFS
     vargs.add("1>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + "/stdout");
@@ -1128,16 +1182,6 @@ public class ApplicationMaster extends CompositeService {
 
     ContainerLaunchContext ctx = ContainerLaunchContext.newInstance(
         localResources, env, commands, null, null, null);
-    // ctx.setTokens(UserGroupInformation.getCurrentUser().getCredentials().getAllTokens().duplicate());
-
-    /*
-     * StartContainerRequest startReq =
-     * Records.newRecord(StartContainerRequest.class);
-     * startReq.setContainerLaunchContext(ctx); List<StartContainerRequest>
-     * startReqList = new ArrayList<StartContainerRequest>();
-     * startReqList.add(startReq); StartContainersRequest startReqs =
-     * StartContainersRequest.newInstance(startReqList);
-     */
 
     try {
       nmClientAsync.startContainerAsync(container, ctx);
@@ -1155,8 +1199,7 @@ public class ApplicationMaster extends CompositeService {
    * Register the Application Master to the Resource Manager
    *
    * @return the registration response from the RM
-   * @throws YarnException
-   *           , IOException
+   * @throws YarnException , IOException
    */
   private RegisterApplicationMasterResponse registerToRM()
       throws YarnException, IOException {
@@ -1190,4 +1233,5 @@ public class ApplicationMaster extends CompositeService {
       return mpiMsgs;
     }
   }
+
 }

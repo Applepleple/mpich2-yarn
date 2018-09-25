@@ -76,4 +76,5 @@ public class MPIConstants {
   public static final String ALLOCATOR = "ALLOCATOR";
 
   public static final String AM_PUBLIC_KEY = "APPMASTER_PUBLIC_KEY";
+
 }
